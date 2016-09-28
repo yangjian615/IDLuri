@@ -111,15 +111,20 @@ end
 
 
 ;+
-;   Set the URL.
+;   Set the URI.
 ;
 ; :Params:
-;       URL:            in, required, type=string
-;                       The URL to be made the current url.
+;       URI:            in, required, type=string
+;                       The URL to be made the current uri.
+;       SUCCESS:        out, optional, type=boolean
+;                       Retuns true (1) if successful, false (0) otherwise.
 ;-
-pro MrFileURI::SetURI, uri
+pro MrFileURI::SetURI, uri, success
 	compile_opt idl2
 	on_error, 2
+	
+	;Assume success
+	success = 1
 
 	;Parse the URL
 	;   - Take scheme from object property -- relative path could be given.
@@ -135,9 +140,16 @@ pro MrFileURI::SetURI, uri
 	                  USERNAME  = username
 
 	;Test if the path is a directory
-	if scheme eq '' then message, 'Invalid URI.'
-	if ~file_test(path, /DIRECTORY) then $
-		message, 'URI path is not a valid directory: "' + path + '".'
+	if scheme eq '' then begin
+		success = 0
+		message, 'Invalid URI.'
+	endif
+	if ~file_test(path, /DIRECTORY) then begin
+		success = 0
+		if arg_present(success) $
+			then return $
+			else message, 'URI path is not a valid directory: "' + path + '".'
+	endif
 	
 	;Change directories
 	cd, path

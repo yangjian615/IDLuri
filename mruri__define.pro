@@ -81,29 +81,7 @@ end
 
 
 ;+
-;   Chance directories.
-;
-; :Examples:
-;   Change URLs relative to the current URL::
-;       IDL> wg = obj_new('MrURI')
-;       IDL> wg.SetURL, 'http://emfisis.physics.uiowa.edu/Flight/'
-;       IDL> wg.cd, './L3/2013/'   
-;       IDL> wg.PWD
-;           http://emfisis.physics.uiowa.edu/Flight/L3/2013
-;
-;   Move up two directories::
-;       IDL> wg.cd, '../../'
-;       IDL> wg.PWD
-;           http://emfisis.physics.uiowa.edu/Flight
-;
-;   Change to a different host
-;       IDL> wg -> CD, 'http://www.google.com/' 
-;       IDL> print, wg.GetURL()
-;           http://www.google.com/
-;
-;   Change to a website that requires a log-in
-;       IDL> wg -> CD, 'http://mmsdata.sr.unh.edu/'
-;   
+;   Change directories.
 ;
 ; :Params:
 ;       DESTINATION:    in, optional, type=integer, default='*'
@@ -111,10 +89,14 @@ end
 ;                           with "/", this is equivalent to setting the URL_PATH property.
 ;                           Relative paths will be appended to the current URL.
 ;                           The ".." and "./" symbols are recognized.
+;
+; :Keywords:
+;       SUCCESS:        out, optional, type=boolean
+;                       Returns true (1) if successful, 0 otherwise. If not present
+;                           and SUCCESS=0, an error will occur.
 ;-
 pro MrURI::CD, destination, $
-COUNT=count, $
-ERROR=the_error
+SUCCESS=success
 	compile_opt idl2
 
 	;Catch errors
@@ -187,7 +169,10 @@ ERROR=the_error
 	endelse
 
 	;Change directories
-	if uri ne '' then self -> SetURI, uri
+	self -> SetURI, uri, success
+	
+	;Success status
+	if ~success && ~arg_present(success) then message, 'Connot change directories.'
 end
 
 
@@ -1024,7 +1009,7 @@ end
 ;       URI:            in, required, type=string
 ;                       The URL to be made the current uri.
 ;-
-pro MrURI::SetURI, uri
+pro MrURI::SetURI, uri, success
 	compile_opt idl2
 	on_error, 2
 
@@ -1111,7 +1096,13 @@ ERROR=the_error
 ; Search for Match ///////////////////////////////////////////////////
 ;---------------------------------------------------------------------
 	;Change directories to ROOT and search for PATTERN
-	self -> CD, root
+	self -> CD, root, SUCCESS=success
+	if ~success then begin
+		count = 0
+		return, ''
+	endif
+	
+	;Match directory contents
 	self -> LS, subPattern, REGEX=(iFirstToken ne -1), COUNT=count, OUTPUT=linkOut, ERROR=the_error
 	if the_error ne 0 then message, /REISSUE_LAST
 	if count eq 0 then begin

@@ -62,19 +62,21 @@ function MrWebURI::_OverloadPrint
 	uri_print = self -> MrURI::_OverloadPrint()
 	
 	;Create strings
-	offline     = string('  Offline',     '=', self.offline,     FORMAT='(a-26, a-2, i1)')
-	no_download = string('  No_Download', '=', self.no_download, FORMAT='(a-26, a-2, i1)')
-	local_root  = string('  Local_Root',  '=', self.local_root,  FORMAT='(a-26, a-2, a0)')
-	mirror_root = string('  Mirror_Root', '=', self.mirror_root, FORMAT='(a-26, a-2, a0)')
-	remote_root = string('  Remote_Root', '=', self.remote_root, FORMAT='(a-26, a-2, a0)')
+	offline      = string('  Offline',      '=', self.offline,      FORMAT='(a-26, a-2, i1)')
+	no_download  = string('  No_Download',  '=', self.no_download,  FORMAT='(a-26, a-2, i1)')
+	dropbox_root = string('  Dropbox_Root', '=', self.dropbox_root, FORMAT='(a-26, a-2, a0)')
+	local_root   = string('  Local_Root',   '=', self.local_root,   FORMAT='(a-26, a-2, a0)')
+	mirror_root  = string('  Mirror_Root',  '=', self.mirror_root,  FORMAT='(a-26, a-2, a0)')
+	remote_root  = string('  Remote_Root',  '=', self.remote_root,  FORMAT='(a-26, a-2, a0)')
 
 	;Output array
-	outStr = [ [ uri_print   ], $
-	           [ offline     ], $
-	           [ no_download ], $
-	           [ local_root  ], $
-	           [ mirror_root ], $
-	           [ remote_root ] $
+	outStr = [ [ uri_print    ], $
+	           [ offline      ], $
+	           [ no_download  ], $
+	           [ dropbox_root ], $
+	           [ local_root   ], $
+	           [ mirror_root  ], $
+	           [ remote_root  ] $
 	         ]
 	
 	;Sort alphabetically
