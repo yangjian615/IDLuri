@@ -387,24 +387,9 @@ TPATTERN=tpattern
 ;-----------------------------------------------------
 
 	;Search locally
-	if self.offline then begin
-		;Create a local URI object
-		;   - Not enough to simply use ::uri2dir because MrTokens may be present.
-		oFile = MrFileURI('file://' + self.local_root)
-		
-		;Convert the URI to a directory
-		file_uri = self -> uri2dir(uri)
-		
-		;Search for files
-		files = oFile -> Search(file_uri)
-		
-		;Destroy the object
-		obj_destroy, oFile
-	
-	;Search remotely
-	endif else begin
-		files = self -> Search(uri)
-	endelse
+	if self.offline $
+		then files = self -> SearchLocal(uri, COUNT=count) $
+		else files = self -> Search(uri, COUNT=count)
 
 ;-----------------------------------------------------
 ; Filter Files \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
@@ -1046,7 +1031,7 @@ end
 ;       URL:            in, required, type=string
 ;                       The fully resolved URI to be made the current uri.
 ;-
-pro MrWebURI::SetURI, uri
+pro MrWebURI::SetURI, uri, success
 	compile_opt idl2
 	on_error, 2
 
@@ -1073,75 +1058,81 @@ pro MrWebURI::SetURI, uri
 	if pos ne -1 then path = strmid(path, pos+1)
 
 ;-----------------------------------------------------
-; Set the URI \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+; OnLine-Mode \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 ;-----------------------------------------------------
-
-	;Rules:
-	;   - A fully resolved URI is expected as input
-	;   - PORT cannot be a null string
-	;   - Do not reset user information. Call to ::LogIn will verify login info.
-;	if fragment eq '' then void = temporary(fragment)
-;	if host     eq '' then void = temporary(host)
-;	if path     eq '' then void = temporary(path)
-;	if query    eq '' then void = temporary(query)
-	if scheme   eq '' then message, 'The URI must have a scheme.'
-	if password eq '' then void = temporary(password)
-	if port     eq '' then void = temporary(port)
-	if username eq '' then void = temporary(username)
+	success = 1B
+	if ~self.offline then begin
 	
-	;Set for the URL object as well
-	self -> IDLnetURL::SetProperty, URL_HOSTNAME = host, $
-	                                URL_PATH     = path, $
-	                                URL_QUERY    = query, $
-	                                URL_USERNAME = username, $
-	                                URL_PORT     = port, $
-	                                URL_SCHEME   = scheme, $
-	                                URL_PASSWORD = password
-
-;-----------------------------------------------------
-; Check For Success \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
-;-----------------------------------------------------
-	;Check if everything was successful
-	rh     = self -> GetResponseHeader()
-	header = self -> ParseResponseHeader(rh)
-	reset_info = 0B
-
-	;Handle various cases
-	if header.code ne 200 then begin
-		case header.code of
-			;Re-route moved URIs
-			301: begin
-				MrPrintF, 'LogWarn', 'URI Moved'
-				MrPrintF, 'LogWarn', '   From: ' + uri
-				MrPrintF, 'LogWarn', '   To:   ' + header.location
+	;-----------------------------------------------------
+	; Set the URI \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+	;-----------------------------------------------------
+		;Rules:
+		;   - A fully resolved URI is expected as input
+		;   - PORT cannot be a null string
+		;   - Do not reset user information. Call to ::LogIn will verify login info.
+	;	if fragment eq '' then void = temporary(fragment)
+	;	if host     eq '' then void = temporary(host)
+	;	if path     eq '' then void = temporary(path)
+	;	if query    eq '' then void = temporary(query)
+		if scheme   eq '' then message, 'The URI must have a scheme.'
+		if password eq '' then void = temporary(password)
+		if port     eq '' then void = temporary(port)
+		if username eq '' then void = temporary(username)
+		
+		;Set for the URL object as well
+		self -> IDLnetURL::SetProperty, URL_HOSTNAME = host, $
+		                                URL_PATH     = path, $
+		                                URL_QUERY    = query, $
+		                                URL_USERNAME = username, $
+		                                URL_PORT     = port, $
+		                                URL_SCHEME   = scheme, $
+		                                URL_PASSWORD = password
+	
+	;-----------------------------------------------------
+	; Check For Success \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+	;-----------------------------------------------------
+		;Check if everything was successful
+		rh     = self -> GetResponseHeader()
+		header = self -> ParseResponseHeader(rh)
+		reset_info = 0B
+	
+		;Handle various cases
+		if header.code ne 200 then begin
+			case header.code of
+				;Re-route moved URIs
+				301: begin
+					MrPrintF, 'LogWarn', 'URI Moved'
+					MrPrintF, 'LogWarn', '   From: ' + uri
+					MrPrintF, 'LogWarn', '   To:   ' + header.location
+				endcase
+				
+				;URL Found (redirection)
+				302: begin
+					MrPrintF, 'LogWarn', 'URL Found'
+					MrPrintF, 'LogWarn', '   Location: ' + header.location
+					self -> CD, header.location
+					return
+				endcase
+				
+				;Unauthorized
+				401: begin
+					MrPrintF, 'Log-In required.'
+					self -> LogIn
+				endcase
+				
+				;URI not found
+				404: begin
+					success = 0B
+					MrPrintF, 'LogErr', header.code, header.status, uri, FORMAT='(%"%i: %s; \"%s\"")'
+				endcase
+				
+				;Use the error handler
+				else: begin
+					success = 0B
+					self -> Error_Handler
+				endcase
 			endcase
-			
-			;URL Found (redirection)
-			302: begin
-				MrPrintF, 'LogWarn', 'URL Found'
-				MrPrintF, 'LogWarn', '   Location: ' + header.location
-				self -> CD, header.location
-				return
-			endcase
-			
-			;Unauthorized
-			401: begin
-				MrPrintF, 'Log-In required.'
-				self -> LogIn
-			endcase
-			
-			;URI not found
-			404: begin
-				MrPrintF, 'LogErr', header.code, header.status, uri, FORMAT='(%"%i: %s; \"%s\"")'
-				reset_info = 1B
-			endcase
-			
-			;Use the error handler
-			else: begin
-				self -> Error_Handler
-				reset_info = 1B
-			endcase
-		endcase
+		endif
 	endif
 
 ;-----------------------------------------------------
@@ -1149,15 +1140,7 @@ pro MrWebURI::SetURI, uri
 ;-----------------------------------------------------
 	
 	;Set properties
-	if reset_info then begin
-		self -> IDLnetURL::SetProperty, URL_HOSTNAME = self.host, $
-		                                URL_PATH     = self.path, $
-		                                URL_QUERY    = self.query, $
-;		                                URL_USERNAME = username, $
-;		                                URL_PORT     = port, $
-		                                URL_SCHEME   = self.scheme
-;		                                URL_PASSWORD = self.password
-	endif else begin
+	if success then begin
 		self.fragment = fragment
 		self.host     = host
 		self.path     = path
@@ -1166,7 +1149,97 @@ pro MrWebURI::SetURI, uri
 		if n_elements(username) gt 0 then self.username  = username
 		if n_elements(password) gt 0 then self.password  = password
 		if n_elements(port)     gt 0 then self.port      = port
+	endif else begin
+		self -> IDLnetURL::SetProperty, URL_HOSTNAME = self.host, $
+		                                URL_PATH     = self.path, $
+		                                URL_QUERY    = self.query, $
+;		                                URL_USERNAME = username, $
+;		                                URL_PORT     = port, $
+		                                URL_SCHEME   = self.scheme
+;		                                URL_PASSWORD = self.password
 	endelse
+end
+
+
+;+
+;   Search for files that match the URI.
+;
+; :Params:
+;       URI:            in, required, type=string
+;                       The fully resolved URI to be made the current uri.
+;
+; :Keywords:
+;       COUNT:          out, optional, type=integer
+;                       Number of files found.
+;
+; :Returns:
+;       FILES:          out, required, type=string/strarr
+;                       Names of the files that match the `URI`.
+;-
+function MrWebURI::SearchLocal, uri, $
+COUNT=count
+	compile_opt idl2
+	on_error, 2
+
+;-----------------------------------------------------
+; Local Root \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+;-----------------------------------------------------
+	
+	;Create a local URI object
+	;   - Not enough to simply use ::uri2dir because MrTokens may be present.
+	oFile = MrFileURI('file://' + self.local_root)
+	
+	;Convert the URI to a directory
+	file_uri = self -> uri2dir(uri)
+	
+	;Search for files
+	files = oFile -> Search(file_uri, COUNT=nLocal)
+
+;-----------------------------------------------------
+; Dropbox \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+;-----------------------------------------------------
+	if self.dropbox_root ne '' then begin
+		;Create a local URI object
+		;   - Not enough to simply use ::uri2dir because MrTokens may be present.
+		oFile = MrFileURI('file://' + self.dropbox_root)
+	
+		;Convert the URI to a directory
+		file_uri = self -> uri2dir(uri)
+	
+		;Search for files
+		dbFiles = oFile -> Search(file_uri, COUNT=nDropbox)
+		
+		;Combine search results
+		if nDropbox gt 0 then begin
+			if nLocal gt 0 $
+				then files = [files, dbFiles] $
+				else files = dbFiles
+		endif
+		
+		;Increase count
+		count += nDropbox
+	endif
+	
+	;Destroy the file object
+	obj_destroy, oFile
+
+;-----------------------------------------------------
+; Filter Files \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+;-----------------------------------------------------
+
+	;Filter by time and version
+	if keyword_set(filter) && count gt 0 $
+		then files = self -> FilterFiles(files, COUNT=count)
+	
+	;Sort alphabetically
+	if keyword_set(tf_sort) && count gt 0 $
+		then files = files[sort( self -> Path_Basename(files) )]
+
+;-----------------------------------------------------
+; Return \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+;-----------------------------------------------------
+	if count eq 0 then files = ''
+	return, files
 end
 
 
