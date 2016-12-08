@@ -779,7 +779,7 @@ GROUP_LEADER=group_leader
 		oLogin = obj_new('MrLogin', GROUP_LEADER=group_leader)
 		oLogin -> GetProperty, USERNAME=username, PASSWORD=password, CANCEL=cancel
 		obj_destroy, oLogin
-	
+
 		;Check what happened
 		if ~cancel then begin
 			;Input log-in credentials and check if they were accepted
@@ -1535,7 +1535,8 @@ MIRROR_ROOT=mirror_root, $
 NO_DOWNLOAD=no_download, $
 OFFLINE=offline, $
 REMOTE_ROOT=remote_root, $
-VERBOSE=verbose
+VERBOSE=verbose, $
+_REF_EXTRA=extra
 	compile_opt idl2
 
 	;Catch errors
@@ -1572,13 +1573,14 @@ VERBOSE=verbose
 	endif
 	
 	;Set properties
-	self -> SetProperty, OFFLINE      = offline, $
-	                     NO_DOWNLOAD  = no_download, $
-	                     DROPBOX_ROOT = dropbox_root, $
-	                     LOCAL_ROOT   = local_root, $
-	                     MIRROR_ROOT  = mirror_root, $
-	                     REMOTE_ROOT  = remote_root, $
-	                     VERBOSE      = verbose
+	self -> SetProperty, OFFLINE       = offline, $
+	                     NO_DOWNLOAD   = no_download, $
+	                     DROPBOX_ROOT  = dropbox_root, $
+	                     LOCAL_ROOT    = local_root, $
+	                     MIRROR_ROOT   = mirror_root, $
+	                     REMOTE_ROOT   = remote_root, $
+	                     VERBOSE       = verbose, $
+	                     _STRICT_EXTRA = extra
 
 	return, 1
 end

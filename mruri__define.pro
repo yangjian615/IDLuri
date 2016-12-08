@@ -232,6 +232,30 @@ end
 
 
 ;+
+;   Get object properties.
+;
+; :Keywords:
+;       TSTART:         out, optional, type=boolean
+;                       Start time of interval in which file names are desired.
+;       TEND:           out, optional, type=boolean
+;                       End time of interval in which file names are desired.
+;       VERBOSE:        out, optional, type=boolean
+;                       If set, status messages are printed to the console.
+;-
+pro MrURI::GetProperty, $
+DATE_START=date_start, $
+DATE_END=date_end, $
+VERBOSE=verbose
+	compile_opt idl2
+	on_error, 2
+	
+	if arg_present(date_start) then date_start = self.date_start
+	if arg_present(date_end)   then date_end   = self.date_end
+	if arg_present(verbose)    then verbose    = self.verbose
+end
+
+
+;+
 ;   Get the URL
 ;
 ; :Params:
@@ -1018,6 +1042,53 @@ end
 
 
 ;+
+;   Set the URI.
+;
+; :Params:
+;       URI:            in, required, type=string
+;                       The URL to be made the current uri.
+;-
+function MrURI::Search_Filter, link, tokens, $
+COUNT=count
+	compile_opt idl2
+	on_error, 2
+	count = n_elements(link)
+	
+	;Return if there are no filter conditions
+	if self.date_start ne '' || self.date_end ne '' then return, link
+	
+	
+	;Were start or end times given?
+	MrTimeParser_Breakdown, link, tokens, $
+	                        YEAR  = year, $
+	                        MONTH = month, $
+	                        DAY   = day
+	
+	;Keep the directories/files that fall within the specified dates
+	tf_pass = replicate(0B, count)
+	if self.date_start ne '' then begin
+		if year[0]  ne '' then tf_pass = tf_pass or ( fix(year)  ge fix(strmid(self.date_start, 0, 4)) )
+		if month[0] ne '' then tf_pass = tf_pass or ( fix(month) ge fix(strmid(self.date_start, 5, 2)) )
+		if day[0]   ne '' then tf_pass = tf_pass or ( fix(day)   ge fix(strmid(self.date_start, 8, 2)) )
+	endif
+	if self.date_end ne '' then begin
+		if year[0]  ne '' then tf_pass = tf_pass or ( fix(year)  lt fix(strmid(self.date_end, 0, 4)) )
+		if month[0] ne '' then tf_pass = tf_pass or ( fix(month) lt fix(strmid(self.date_end, 5, 2)) )
+		if day[0]   ne '' then tf_pass = tf_pass or ( fix(day)   lt fix(strmid(self.date_end, 8, 2)) )
+	endif
+	
+	;Filter results
+	iPass = where(tf_pass, count)
+	if nPass eq 0 then begin
+		self -> CD, purl
+		return, ''
+	endif else begin
+		linkOut = linkOut[iPass]
+	endelse
+end
+
+
+;+
 ;   Able to recursively find files from a file URI, given a URI or URI pattern.
 ;   URI patterns can have any token recognized by MrTokens.pro.
 ;
@@ -1087,8 +1158,8 @@ ERROR=the_error
 		;All other cases.
 		else: begin
 			root       = strmid(uriPath, 0, pos[iFirstToken])
-			subPattern = path_parts[iFirstToken]
-			subPattern = MrTokens_ToRegex(subPattern)
+			firstToken = path_parts[iFirstToken]
+			subPattern = MrTokens_ToRegex(firstToken)
 		endelse
 	endcase
 
@@ -1101,14 +1172,27 @@ ERROR=the_error
 		count = 0
 		return, ''
 	endif
-	
+
 	;Match directory contents
-	self -> LS, subPattern, REGEX=(iFirstToken ne -1), COUNT=count, OUTPUT=linkOut, ERROR=the_error
-	if the_error ne 0 then message, /REISSUE_LAST
-	if count eq 0 then begin
+	self -> LS, subPattern, $
+	            REGEX  = (iFirstToken ne -1), $
+	            COUNT  = count, $
+	            OUTPUT = linkOut, $
+	            ERROR  = the_error
+
+	;Error
+	if the_error ne 0 then begin
+		message, /REISSUE_LAST
+	
+	;No matches
+	endif else if count eq 0 then begin
 		self -> CD, purl
 		return, ''
 	endif
+
+;---------------------------------------------------------------------
+; Restrict Links /////////////////////////////////////////////////////
+;---------------------------------------------------------------------
 
 	;
 	; We need to exclude the following types of links:
@@ -1186,7 +1270,7 @@ end
 ;
 ; :Private:
 ;-
-function MrURI::FilterTime, fileMatch, files, tstart, tend, $
+function MrURI::FilterTime, fileMatch, files, $
 COUNT=count, $
 CLOSEST=closest, $
 RELAXED_TSTART=relaxed_tstart, $
@@ -1197,10 +1281,10 @@ TPATTERN=tpattern
 	
 	;Filter both start and end times?
 	tf_closest = keyword_set(closest)
-	tf_tstart  = n_elements(tstart) gt 0 && tstart ne ''
-	tf_tend    = n_elements(tend)   gt 0 && tend   ne ''
+	tf_tstart  = self.date_start ne ''
+	tf_tend    = self.date_end   ne ''
 	if n_elements(time_order) eq 0 then time_order = '%Y%M%d%H%m%S'
-	if n_elements(tpattern)   eq 0 then tpattern   = '%Y-%M-%dT%H:%m:%S'
+	if n_elements(tpattern)   eq 0 then tpattern   = '%Y-%M-%d'
 	
 	;No need to filter by time if tstart or tend are not provided
 	if ~tf_tstart && ~tf_tend then return, files
@@ -1250,11 +1334,11 @@ TPATTERN=tpattern
 		
 	;Convert input times to integers
 	if tf_tstart then begin
-		MrTimeParser, tstart, tpattern, time_order, temp_start
+		MrTimeParser, self.date_start, tpattern, time_order, temp_start
 		itstart = long64(temporary(temp_start))
 	endif
 	if tf_tend then begin
-		MrTimeParser, tend, tpattern, time_order, temp_tend
+		MrTimeParser, self.date_end, tpattern, time_order, temp_tend
 		itend = long64(temporary(temp_tend))
 	endif
 
@@ -1545,6 +1629,8 @@ end
 ;                           will be generated.
 ;-
 pro MrURI::SetProperty, $
+DATE_START=date_start, $
+DATE_END=date_end, $
 VERBOSE=verbose
 	compile_opt idl2
 
@@ -1558,6 +1644,20 @@ VERBOSE=verbose
 
 	;Set properties
 	if n_elements(verbose) gt 0 then self.verbose = keyword_set(verbose)
+	
+	;TSTART
+	if n_elements(date_start) gt 0 then begin
+		if MrTokens_IsMatch(date_start, '%Y-%M-%d') $
+			then self.date_start = date_start $
+			else message, 'DATE_START must be formatted as %Y-%M-%d.'
+	endif
+	
+	;TEND
+	if n_elements(date_end) gt 0 then begin
+		if MrTokens_IsMatch(date_end, '%Y-%M-%d') $
+			then self.date_end = date_end $
+			else message, 'DATE_END must be formatted as %Y-%M-%d.'
+	endif
 end
 
 
@@ -1651,6 +1751,8 @@ pro MrURI__Define, class
 
 	class = { MrURI, $
 	          inherits IDL_Object, $
+	          date_start:   '', $
+	          date_end:     '', $
 	          fragment:     '', $
 	          field_values: ptr_new(), $
 	          host:         '', $
