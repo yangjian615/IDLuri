@@ -67,7 +67,6 @@ function MrWebURI::_OverloadPrint
 	dropbox_root = string('  Dropbox_Root', '=', self.dropbox_root, FORMAT='(a-26, a-2, a0)')
 	local_root   = string('  Local_Root',   '=', self.local_root,   FORMAT='(a-26, a-2, a0)')
 	mirror_root  = string('  Mirror_Root',  '=', self.mirror_root,  FORMAT='(a-26, a-2, a0)')
-	remote_root  = string('  Remote_Root',  '=', self.remote_root,  FORMAT='(a-26, a-2, a0)')
 
 	;Output array
 	outStr = [ [ uri_print    ], $
@@ -75,8 +74,7 @@ function MrWebURI::_OverloadPrint
 	           [ no_download  ], $
 	           [ dropbox_root ], $
 	           [ local_root   ], $
-	           [ mirror_root  ], $
-	           [ remote_root  ] $
+	           [ mirror_root  ] $
 	         ]
 	
 	;Sort alphabetically
@@ -321,6 +319,21 @@ end
 ;+
 ;   Handle errors. Translate CCurlException errors into something useful.
 ;-
+PRO MrWebURI::CopyToLocal, files, $
+MIRROR=mirror
+	Compile_Opt idl2
+	
+	;What is the local version
+	fLocal = self -> uri2dir(files, MIRROR=mirror)
+	
+	;Copy
+	File_Copy, files, fLocal, VERBOSE=self.verbose
+END
+
+
+;+
+;   Handle errors. Translate CCurlException errors into something useful.
+;-
 pro MrWebURI::Error_Handler
 	compile_opt idl2
 
@@ -361,11 +374,7 @@ end
 function MrWebURI::Get, uri, $
 COUNT=count, $
 CLOSEST=closest, $
-NEWEST=newest, $
-TSTART=tstart, $
-TEND=tend, $
-TIMEORDER=time_order, $
-TPATTERN=tpattern
+NEWEST=newest
 	compile_opt strictarr
 	
 	catch, the_error
@@ -383,62 +392,29 @@ TPATTERN=tpattern
 	;
 
 ;-----------------------------------------------------
-; Search for Files \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+; Search Offline \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 ;-----------------------------------------------------
-
-	;Search locally
-	if self.offline $
-		then files = self -> SearchLocal(uri, COUNT=count) $
-		else files = self -> Search(uri, COUNT=count)
-
-;-----------------------------------------------------
-; Filter Files \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
-;-----------------------------------------------------
-
-	;Time filter
-	files = self -> FilterTime(uri, files, tstart, tend, $
-	                           COUNT     = count, $
-	                           CLOSEST   = closest, $
-	                           TIMEORDER = time_order, $
-	                           TPATTERN  = tpattern)
-	if count eq 0 then message, 'No files in time range.'
-	
-	;Version filter
-	files = self -> FilterVersion(files, $
-	                              COUNT=count, $
-	                              NEWEST=newest)
-	if count eq 0 then message, 'No files with requested version.'
-
-;-----------------------------------------------------
-; Local Files \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
-;-----------------------------------------------------
-	
-	;Allocate memory
-	out_files = strarr(count)
-
-	;Simulate what the local version would look like
-	local_files = self -> uri2dir(files)
-	
-	;Check if files exist locally
-	tf_local = file_test(local_files)
-	
-	;Which files do we need to download?
-	iLocal = where(tf_local, nLocal, COMPLEMENT=iDownload, NCOMPLEMENT=nDownload)
-	if nLocal gt 0 then out_files[iLocal] = local_files[iLocal]
+	self -> SearchAll, uri, flocal, fremote, $
+	                   NREMOTE = nRemote, $
+	                   NLOCAL  = nLocal
 
 ;-----------------------------------------------------
 ; Remote Files \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 ;-----------------------------------------------------
+	count     = nLocal + nRemote
+	out_files = StrArr(count)
 
 	;Do not download
-	if self.no_download then begin
-		out_files = nLocal eq 0 ? '' : out_files[iLocal]
+	if nRemote eq 0 || self.no_download then begin
+		out_files = nLocal eq 0 ? '' : Temporary(flocal)
 		count     = nLocal
 		
 	;Download
-	endif else if nDownload gt 0 then begin
-		out_files[iDownload] = self -> Download(files[iDownload], file_dirname(local_files[iDownload]))
-	endif
+	endif else begin 
+		temp_local = self -> uri2dir(fremote)
+		out_files[0:nRemote-1] = self -> Download(fremote, Temporary(temp_local))
+		IF nLocal GT 0 THEN out_files[nRemote:count-1] = Temporary(flocal)
+	endelse
 
 ;-----------------------------------------------------
 ; Return \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
@@ -568,46 +544,116 @@ end
 
 
 ;+
-;   Set the URI.
+;   Get object properties.
 ;
-; :Params:
-;       URL:            in, required, type=string
-;                       The fully resolved URI to be made the current uri.
+; :Keywords:
+;       COPY_TO_LOCAL:      out, optional, type=boolean
+;                           If set, files found in `DROPBOX_ROOT` and `MIRROR_ROOT` are
+;                               copied to `LOCAL_ROOT`.
+;       DATE_START:         out, optional, type=boolean
+;                           Start time of interval in which file names are desired.
+;       DATE_END:           out, optional, type=boolean
+;                           End time of interval in which file names are desired.
+;       DROPBOX_ROOT:       out, optional, type=string
+;                           Local folder in which files are temporarily placed before
+;                               being moved to into `LOCAL_ROOT`.
+;       FPATTERN:           in, optional, type=string
+;                           A MrTokens pattern that matches the time pattern in the file names.
+;       HOST:               in, optional, type=string
+;                           The URL host.
+;       LOCAL_ROOT:         out, optional, type=string
+;                           Local directory root where downloaded files are to be saved.
+;                               The underlying directory structure should mimic the remote
+;                               site from which data was obtained.
+;       MIRROR_ROOT:        out, optional, type=string
+;                           Local root directory of a data mirror.
+;       NO_DOWNLOAD:        out, optional, type=boolean
+;                           If set, use only those files that are saved locally. Files are
+;                               still searched for on the remote server. Remote files are
+;                               normally downloaded if they are more recent and/or have a
+;                               higher version number than local files.
+;       NSEGMENT:           out, optional, type=integer
+;                           The N-th path segment of `REMOTE_ROOT` at which the directory
+;                               structure at `MIRROR_ROOT` and `LOCAL_ROOT` match.
+;       OFFLINE:            out, optional, type=boolean
+;                           If set, the object will function in offline mode (search for
+;                               files locally). Automatically sets `NO_DOWNLOAD` to the same value.
+;       PASSWORD:           in, optional, type=string
+;                           Password that grants access to the URL.
+;       PATH:               in, optional, type=string
+;                           The URL path.
+;       PORT:               in, optional, type=string
+;                           Port used to connect to the URL.
+;       QUERY:              in, optional, type=string
+;                           URL query string.
+;       REMOTE_ROOT:        out, optional, type=string
+;                           Remote root directory where data is saved.
+;       SCHEME:             in, optional, type=string
+;                           URL scheme.
+;       TPATTERN:           in, optional, type=string
+;                           A MrTokens pattern that matches `DATE_START` and `DATE_END`.
+;       USERNAME:           in, optional, type=string
+;                           Username of user with access to site.
+;       VERBOSE:            out, optional, type=boolean
+;                           If set, status messages are printed to the console.
+;       VREGEX:             out, optional, type=string
+;                           A regular expression that parses the file version number.
+;       _REF_EXTRA:         out, optional, type=any
+;                           Any keyword accepted by the superclass IDLnetURL::GetProperty
+;                               method is also accepted via keyword inheritance.
 ;-
-pro MrWebURI::GetProperty, $
+PRO MrWebURI::GetProperty, $
+COPY_TO_LOCAL=copy_to_local, $
+DATE_END=date_end, $
+DATE_START=date_start, $
 DROPBOX_ROOT=dropbox_root, $
-LOCAL_ROOT=local_root, $
-MIRROR_ROOT=mirror_root, $
-REMOTE_ROOT=remote_root, $
+FPATTERN=fpattern, $
 FRAGMENT=fragment, $
 HOST=host, $
+LOCAL_ROOT=local_root, $
+MIRROR_ROOT=mirror_root, $
+NO_DOWNLOAD=no_download, $
+NSEGMENT=nSegment, $
+OFFLINE=offline, $
 PATH=path, $
 PORT=port, $
 QUERY=query, $
+REMOTE_ROOT=remote_root, $
 SCHEME=scheme, $
+TPATTERN=tpattern, $
 VERBOSE=verbose, $
+VREGEX=vregex, $
 _REF_EXTRA=extra
-	compile_opt idl2
-	on_error, 2
+	Compile_Opt idl2
+	On_Error, 2
 	
 	;Set properties
-	if arg_present(dropbox_root) gt 0 then dropbox_root = self.dropbox_root
-	if arg_present(local_root)   gt 0 then local_root   = self.local_root
-	if arg_present(mirror_root)  gt 0 then mirror_root  = self.mirror_root
-	if arg_present(remote_root)  gt 0 then remote_root  = self.remote_root
+	IF Arg_Present(copy_to_local) GT 0 THEN copy_to_local = self.copy_to_local
+	IF Arg_Present(dropbox_root)  GT 0 THEN dropbox_root  = self.dropbox_root
+	IF Arg_Present(local_root)    GT 0 THEN local_root    = self.local_root
+	IF Arg_Present(mirror_root)   GT 0 THEN mirror_root   = self.mirror_root
+	IF Arg_Present(no_download)   GT 0 THEN no_download   = self.no_download
+	IF Arg_Present(nSegment)      GT 0 THEN nSegment      = self.nSegment
+	IF Arg_Present(offline)       GT 0 THEN offline       = self.offline
+	IF Arg_Present(remote_root)   GT 0 THEN remote_root   = self -> BuildURI(SCHEME=self.scheme, HOST=self.host)
 
 	;MrURI Properties
-	if arg_present(fragment) gt 0 then fragment = self.fragment
-	if arg_present(host)     gt 0 then host     = self.host
-	if arg_present(path)     gt 0 then path     = self.path
-	if arg_present(port)     gt 0 then port     = self.port
-	if arg_present(query)    gt 0 then query    = self.query
-	if arg_present(scheme)   gt 0 then scheme   = self.scheme
-	if arg_present(verbose)  gt 0 then verbose  = self.verbose
+	IF Arg_Present(date_start) GT 0 THEN date_start = self.date_start
+	IF Arg_Present(date_end)   GT 0 THEN date_end   = self.date_end
+	IF Arg_Present(fpattern)   GT 0 THEN fpattern   = self.fpattern
+	IF Arg_Present(fragment)   GT 0 THEN fragment   = self.fragment
+	IF Arg_Present(host)       GT 0 THEN host       = self.host
+	IF Arg_Present(path)       GT 0 THEN path       = self.path
+	IF Arg_Present(port)       GT 0 THEN port       = self.port
+	IF Arg_Present(query)      GT 0 THEN query      = self.query
+	IF Arg_Present(scheme)     GT 0 THEN scheme     = self.scheme
+	IF Arg_Present(tpattern)   GT 0 THEN tpattern   = self.tpattern
+	IF Arg_Present(verbose)    GT 0 THEN verbose    = self.verbose
+	IF Arg_Present(vregex)     GT 0 THEN vregex     = self.vregex
 
 	;NetURL properties
-	if n_elements(extra) gt 0 then self -> IDLnetURL::GetProperty, _STRICT_EXTRA=extra
-end
+	IF N_Elements(extra) GT 0 THEN self -> IDLnetURL::GetProperty, _STRICT_EXTRA=extra
+END
 
 
 ;+
@@ -1031,31 +1077,30 @@ end
 ;       URL:            in, required, type=string
 ;                       The fully resolved URI to be made the current uri.
 ;-
-pro MrWebURI::SetURI, uri, success
+pro MrWebURI::SetURI, uri, success, $
+FRAGMENT=fragment, $
+HOST=host, $
+PATH=path, $
+PORT=port, $
+QUERY=query, $
+SCHEME=scheme
 	compile_opt idl2
 	on_error, 2
+
+	;Keep the old url in case of an error
+	old_uri = self -> GetURI()
 
 ;-----------------------------------------------------
 ; Parse URI \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 ;-----------------------------------------------------
-
-	;Parse the URL
-	;   - Take scheme from object property -- relative path could be given.
-	;   - Implies the scheme property must be correct upon entry
-	self -> ParseURI, uri, $
-	                  FRAGMENT  = fragment, $
-	                  HOST      = host, $
-	                  PASSWORD  = password, $
-	                  PATH      = path, $
-	                  PORT      = port, $
-	                  QUERY     = query, $
-	                  SCHEME    = scheme, $
-	                  USERNAME  = username
-	
-	;::ParseURI returns the path with a leading "/". We must remove them
-	;to prevent them from compounding when IDLnetURL::SetProperty is called.
-	pos = stregex(path, '^/+')
-	if pos ne -1 then path = strmid(path, pos+1)
+	;Call superclass
+	self -> MrURI::SetURI, uri, $
+	                       FRAGMENT = fragment, $
+	                       HOST     = host, $
+	                       PATH     = path, $
+	                       PORT     = port, $
+	                       QUERY    = query, $
+	                       SCHEME   = scheme
 
 ;-----------------------------------------------------
 ; OnLine-Mode \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
@@ -1070,15 +1115,20 @@ pro MrWebURI::SetURI, uri, success
 		;   - A fully resolved URI is expected as input
 		;   - PORT cannot be a null string
 		;   - Do not reset user information. Call to ::LogIn will verify login info.
-	;	if fragment eq '' then void = temporary(fragment)
-	;	if host     eq '' then void = temporary(host)
-	;	if path     eq '' then void = temporary(path)
-	;	if query    eq '' then void = temporary(query)
-		if scheme   eq '' then message, 'The URI must have a scheme.'
-		if password eq '' then void = temporary(password)
-		if port     eq '' then void = temporary(port)
-		if username eq '' then void = temporary(username)
+		if self.fragment ne '' then fragment = self.fragment
+		if self.host     ne '' then host     = self.host
+		if self.path     ne '' then path     = self.path
+		if self.password ne '' then password = self.password
+		if self.port     ne '' then port     = self.port else void = Temporary(port)
+		if self.query    ne '' then query    = self.query
+		if self.scheme   ne '' then scheme   = self.scheme
+		if self.username ne '' then username = self.username
 		
+		;::ParseURI returns the path with a leading "/". We must remove them
+		;to prevent them from compounding when IDLnetURL::SetProperty is called.
+		pos = stregex(path, '^/+')
+		if pos ne -1 then path = strmid(path, pos+1)
+
 		;Set for the URL object as well
 		self -> IDLnetURL::SetProperty, URL_HOSTNAME = host, $
 		                                URL_PATH     = path, $
@@ -1136,37 +1186,285 @@ pro MrWebURI::SetURI, uri, success
 	endif
 
 ;-----------------------------------------------------
-; Set Properties \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+; In Case of Failue \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 ;-----------------------------------------------------
-	
-	;Set properties
-	if success then begin
-		self.fragment = fragment
-		self.host     = host
-		self.path     = path
-		self.query    = query
-		self.scheme   = scheme
-		if n_elements(username) gt 0 then self.username  = username
-		if n_elements(password) gt 0 then self.password  = password
-		if n_elements(port)     gt 0 then self.port      = port
-	endif else begin
-		self -> IDLnetURL::SetProperty, URL_HOSTNAME = self.host, $
-		                                URL_PATH     = self.path, $
-		                                URL_QUERY    = self.query, $
-;		                                URL_USERNAME = username, $
-;		                                URL_PORT     = port, $
-		                                URL_SCHEME   = self.scheme
-;		                                URL_PASSWORD = self.password
-	endelse
+	if ~success then self -> SetURI, uri
 end
 
 
 ;+
-;   Search for files that match the URI.
+;   Search in REMOTE_ROOT, LOCAL_ROOT, DROPBOX_ROOT, and MIRROR_ROOT for files
+;   that match the input URI. Results are filtered by time and version.
 ;
 ; :Params:
 ;       URI:            in, required, type=string
-;                       The fully resolved URI to be made the current uri.
+;                       URI to match against files with dropbox.
+;       FLOCAL:         out, optional, type=string/strarr
+;                       Names of local files that match search criteria.
+;       FREMOTE:        out, optional, type=string/strarr
+;                       Names of remote files that match search criteria.
+;
+; :Keywords:
+;       NLOCAL:         out, optional, type=integer
+;                       Number of local files found.
+;       NREMOTE:        out, optional, type=integer
+;                       Number of remote files found.
+;-
+PRO MrWebURI::SearchAll, uri, flocal, fremote, $
+NLOCAL=nLocal, $
+NREMOTE=nRemote
+	Compile_Opt idl2
+	On_Error, 2
+	
+	;Initialize variables
+	count   = 0
+	nMirror = 0
+	nLocal  = 0
+
+;-----------------------------------------------------
+; Search Offline \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+;-----------------------------------------------------
+	IF self.offline THEN BEGIN
+		;MIRROR
+		IF self.mirror_root NE '' THEN BEGIN
+			;Full search of mirror
+			files = self -> SearchMirror(uri, COUNT=count)
+			
+			;Filter by time before any additional searches
+			IF count GT 0 $
+				THEN files = self -> FilterTime(files, COUNT=count)
+			
+			;Find equivalent local files
+			;   - Remove MIRROR_FILES that are found locally
+			local_files = self -> uri2dir(files)
+			ilocal      = Where( File_Test( local_files ), nLocal, COMPLEMENT=iMirror, NCOMPLEMENT=count )
+			IF nLocal GT 0 THEN local_files = local_files[iLocal]
+			IF count  GT 0 THEN files       = mirror_files[iMirror]
+			
+		;LOCAL
+		ENDIF ELSE BEGIN
+			files = self -> SearchLocal(uri, COUNT=count)
+		ENDELSE
+
+;-----------------------------------------------------
+; Search Online \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+;-----------------------------------------------------
+	ENDIF ELSE BEGIN
+		;Search remote
+		files = self -> Search(uri, COUNT=count)
+		
+		IF count GT 0 THEN BEGIn
+			;Filter by time before any additional searches
+			files = self -> FilterTime(files, COUNT=count)
+
+			;Search locally for equivalent files
+			;   - Remove remote files that are found locally
+			local_files = self -> uri2dir(files)
+			ilocal      = Where( File_Test( local_files ), nLocal, COMPLEMENT=iRemote, NCOMPLEMENT=count )
+			IF nLocal GT 0 THEN local_files = local_files[iLocal]
+			IF count  GT 0 THEN files       = files[iRemote]
+		
+			;Search mirror for equivalent files
+			;   - Remove remote files that are found on the mirror
+			IF self.mirror_root NE '' THEN BEGIN
+				mirror_files = self -> uri2dir(files, /MIRROR)
+				iMirror      = Where( File_Test( mirror_files ), nMirror, COMPLEMENT=iRemote, NCOMPLEMENT=count )
+				IF nMirror GT 0 THEN mirror_files = mirror_files[iMirror]
+				IF count   GT 0 THEN files        = files[iRemote]
+			ENDIF
+		ENDIF
+	ENDELSE
+
+;-----------------------------------------------------
+; Search Dropbox \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+;-----------------------------------------------------
+	;Full search of dropbox files
+	dropbox_files = self -> SearchDropbox(uri, COUNT=nDropbox)
+	
+	IF nDropbox GT 0 THEN BEGIN
+		;Filter by time
+		dropbox_files = self -> FilterTime(dropbox_files, nDropbox)
+		
+		;We want to compare the file names, not paths
+		dropboxBase = self -> Path_Basename(dropbox_files)
+		fileBase    = self -> Path_Basename(files)
+		
+		;OFFLINE
+		;   - LOCAL & MIRROR take precedence over DROPBOX
+		IF self.offline && count GT 0 THEN BEGIN
+			tf_member = MrIsMember( fileBase, dropboxBase, COMPLEMENT=iKeep )
+			IF N_Elements(iKeep) GT 0 THEN dropbox_files = dropbox_files[iKeep]
+		
+		;ONLINE
+		;   - DROPBOX takes precedence over REMOTE
+		;   - LOCAL and MIRROR files have already been removed from REMOTE
+		ENDIF ELSE IF ~self.offline && nRemote GT 0 THEN BEGIN
+			tf_member = MrIsMember( dropboxBase, fileBase, COMPLEMENT=iKeep )
+			count     = N_Elements(iKeep)
+			IF count GT 0 THEN files = files[iKeep]
+		ENDIF
+	ENDIF
+
+;-----------------------------------------------------
+; Filter Version \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+;-----------------------------------------------------
+	;
+	; At this point, we have files from REMOTE, MIRROR, LOCAL, DROPBOX. The files
+	; are all unique in version number, if not also in name. The next step is to
+	; combine all files and filter by version.
+	;
+	
+	;Mirror
+	IF nMirror GT 0 THEN BEGIN
+		files  = count EQ 0 ? Temporary(mirror_files) : [files, Temporary(mirror_files)]
+		count += Temporary(nMirror)
+	ENDIF
+	
+	;Local
+	IF nLocal GT 0 THEN BEGIN
+		files  = count EQ 0 ? Temporary(local_files) : [files, Temporary(local_files)]
+		count += Temporary(nLocal)
+	ENDIF
+	
+	;Dropbox
+	IF nDropbox GT 0 THEN BEGIN
+		files  = count EQ 0 ? Temporary(dropbox_files) : [files, Temporary(dropbox_files)]
+		count += Temporary(nDropbox)
+	ENDIF
+	
+	;Filter by version
+	files = self -> FilterVersion(files, COUNT=count)
+
+;-----------------------------------------------------
+; Copy DROPBOX and MIRROR Files to LOCAL \\\\\\\\\\\\\
+;-----------------------------------------------------
+	;Separate file types
+	self -> GetProperty, REMOTE_ROOT=remote_root
+	iRemote  = Where( StRegEx(files, remote_root,       /BOOLEAN), nRemote )
+	iLocal   = Where( StRegEx(files, self.local_root,   /BOOLEAN), nLocal )
+	
+	IF self.mirror_root EQ '' $
+		THEN nMirror = 0 $
+		ELSE iMirror = Where( StRegEx(files, self.mirror_root, /BOOLEAN), nMirror )
+	
+	IF self.dropbox_root EQ '' $
+		THEN nDropbox = 0 $
+		ELSE iDropbox = Where( StRegEx(files, self.dropbox_root, /BOOLEAN), nDropbox )
+
+	;Copy
+	IF self.copy_to_local THEN BEGIN
+		;DROPBOX
+		IF nDropbox GT 0 THEN BEGIN
+			;Build equivalent local file names
+			temp_name     = self -> uri2dir(uri)
+			temp_dirname  = self -> Path_DirName( Temporary(temp_name) )
+			temp_basename = self -> Path_BaseName(files[iDropbox])
+			temp_files    = self -> Path_Append( Temporary(temp_basename), ROOT=Temporary(temp_dirname) )
+			
+			;Copy from DROPBOX to LOCAL
+			File_Copy, files[iDropbox], temp_files
+			
+			;Swap to local
+			files[iDropbox] = Temporary(temp_files)
+			iLocal          = nLocal EQ 0 ? Temporary(iDropbox) : [iLocal, Temporary(iDropbox)]
+			nDropbox        = 0
+		ENDIF
+		
+		;MIRROR
+		IF nMirror GT 0 THEN BEGIN
+			;Build equivalent local file names
+			temp_name     = self -> uri2dir(uri, /MIRROR)
+			temp_dirname  = self -> Path_DirName( Temporary(temp_name) )
+			temp_basename = self -> Path_BaseName(files[iMirror])
+			temp_files    = self -> Path_Append( Temporary(temp_basename), ROOT=Temporary(temp_dirname) )
+			
+			;Copy from DROPBOX to LOCAL
+			File_Copy, files[iMirror], temp_files
+			
+			;Swap to local
+			files[iMirror] = Temporary(temp_files)
+			iLocal         = nLocal EQ 0 ? Temporary(iMirror) : [iLocal, Temporary(iMirror)]
+			nMirror        = 0
+		ENDIF
+	ENDIF
+
+;-----------------------------------------------------
+; Separate REMOTE from LOCAL \\\\\\\\\\\\\\\\\\\\\\\\\
+;-----------------------------------------------------
+	;Remote files
+	fremote = nRemote EQ 0 ? '' : files[iRemote]
+	
+	;Local files
+	IF nLocal GT 0 THEN flocal = files[iLocal]
+	
+	;Dropbox files
+	IF nDropbox GT 0 THEN BEGIN
+		flocal  = nLocal EQ 0 ? files[iDropbox] : [flocal, files[iDropbox]]
+		nLocal += nDropbox
+	ENDIF
+	
+	;Mirror files
+	IF nMirror GT 0 THEN BEGIN
+		flocal  = nLocal EQ 0 ? files[iMirror] : [flocal, files[iMirror]]
+		nLocal += nMirror
+	ENDIF
+	
+	IF nLocal  EQ 1 THEN flocal  = flocal[0]
+	IF nRemote EQ 1 THEN fremote = fremote[0]
+END
+
+
+;+
+;   Search the dropbox directory for files that match the URI.
+;
+; :Params:
+;       URI:            in, required, type=string
+;                       URI to match against files with dropbox.
+;
+; :Keywords:
+;       COUNT:          out, optional, type=integer
+;                       Number of files found.
+;
+; :Returns:
+;       FILES:          out, required, type=string/strarr
+;                       Names of the files that match the `URI`.
+;-
+FUNCTION MrWebURI::SearchDropbox, uri, $
+COUNT=count
+	Compile_Opt idl2
+	On_Error, 2
+	
+	;Pre-emptive return
+	count = 0
+	IF self.dropbox_root EQ '' THEN RETURN, ''
+
+;-----------------------------------------------------
+; Search Dropbox \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+;-----------------------------------------------------
+	;Create a local URI object
+	;   - Not enough to simply use ::uri2dir because MrTokens may be present.
+	oFile = MrFileURI('file://' + self.dropbox_root)
+
+	;Convert the URI to a directory
+	file_uri = self -> uri2dir(uri)
+
+	;Search for files
+	files = oFile -> Search(file_uri, COUNT=count)
+
+;-----------------------------------------------------
+; Finish \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+;-----------------------------------------------------
+	Obj_Destroy, oFile
+	RETURN, files
+END
+
+
+;+
+;   Search the local data repository for files that match the URI.
+;
+; :Params:
+;       URI:            in, required, type=string
+;                       URI to match against files with the local data repository.
 ;
 ; :Keywords:
 ;       COUNT:          out, optional, type=integer
@@ -1194,46 +1492,9 @@ COUNT=count
 	
 	;Search for files
 	files = oFile -> Search(file_uri, COUNT=nLocal)
-
-;-----------------------------------------------------
-; Dropbox \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
-;-----------------------------------------------------
-	if self.dropbox_root ne '' then begin
-		;Create a local URI object
-		;   - Not enough to simply use ::uri2dir because MrTokens may be present.
-		oFile = MrFileURI('file://' + self.dropbox_root)
-	
-		;Convert the URI to a directory
-		file_uri = self -> uri2dir(uri)
-	
-		;Search for files
-		dbFiles = oFile -> Search(file_uri, COUNT=nDropbox)
-		
-		;Combine search results
-		if nDropbox gt 0 then begin
-			if nLocal gt 0 $
-				then files = [files, dbFiles] $
-				else files = dbFiles
-		endif
-		
-		;Increase count
-		count += nDropbox
-	endif
 	
 	;Destroy the file object
 	obj_destroy, oFile
-
-;-----------------------------------------------------
-; Filter Files \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
-;-----------------------------------------------------
-
-	;Filter by time and version
-	if keyword_set(filter) && count gt 0 $
-		then files = self -> FilterFiles(files, COUNT=count)
-	
-	;Sort alphabetically
-	if keyword_set(tf_sort) && count gt 0 $
-		then files = files[sort( self -> Path_Basename(files) )]
 
 ;-----------------------------------------------------
 ; Return \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
@@ -1241,6 +1502,49 @@ COUNT=count
 	if count eq 0 then files = ''
 	return, files
 end
+
+
+;+
+;   Search for files that match the URI.
+;
+; :Params:
+;       URI:            in, required, type=string
+;                       URI to match against files with the local or remote mirror repository.
+;
+; :Keywords:
+;       COUNT:          out, optional, type=integer
+;                       Number of files found.
+;
+; :Returns:
+;       FILES:          out, required, type=string/strarr
+;                       Names of the files that match the `URI`.
+;-
+FUNCTION MrWebURI::SearchMirror, uri, $
+COUNT=count
+	Compile_Opt idl2
+	On_Error, 2
+	
+	;Pre-emptive return
+	count     = 0
+	tf_remote = 0B
+	IF self.mirror_root EQ '' THEN RETURN, ''
+
+	;Create a local URI object
+	;   - Not enough to simply use ::uri2dir because MrTokens may be present.
+	oURI = MrFileURI('file://' + self.mirror_root)
+
+	;Convert the URI to a directory
+	file_uri = self -> uri2dir(uri)
+
+	;Search for files
+	files = oURI -> Search(file_uri, COUNT=count)
+
+	;Destroy the file object
+	Obj_Destroy, oURI
+	
+	IF count EQ 0 THEN files = ''
+	RETURN, files
+END
 
 
 ;+
@@ -1272,6 +1576,9 @@ end
 ;                               still searched for on the remote server. Remote files are
 ;                               normally downloaded if they are more recent and/or have a
 ;                               higher version number than local files.
+;       NSEGMENT:           in, optional, type=integer
+;                           The N-th path segment of `REMOTE_ROOT` at which the directory
+;                               structure at `MIRROR_ROOT` and `LOCAL_ROOT` match.
 ;       REMOTE_ROOT:        in, optional, type=string
 ;                           Remote root directory where data is saved.
 ;       _REF_EXTRA:         in, optional, type=any
@@ -1281,10 +1588,12 @@ end
 pro MrWebURI::SetProperty, $
 CALLBACK_DATA=callback_data, $
 CALLBACK_FUNCTION=callback_function, $
+COPY_TO_LOCAL=copy_to_local, $
 DROPBOX_ROOT=dropbox_root, $
 LOCAL_ROOT=local_root, $
 MIRROR_ROOT=mirror_root, $
 NO_DOWNLOAD=no_download, $
+NSEGMENT=nSegment, $
 OFFLINE=offline, $
 REMOTE_ROOT=remote_root, $
 _REF_EXTRA=extra
@@ -1292,10 +1601,20 @@ _REF_EXTRA=extra
 	on_error, 2
 	
 	;Set properties
-	if n_elements(dropbox_root) gt 0 then self.dropbox_root = dropbox_root
-	if n_elements(local_root)   gt 0 then self.local_root   = local_root
-	if n_elements(mirror_root)  gt 0 then self.mirror_root  = mirror_root
-	if n_elements(remote_root)  gt 0 then self.remote_root  = remote_root
+	IF N_Elements(copy_to_local) GT 0 THEN self.copy_to_local = Keyword_Set(copy_to_local)
+	if n_elements(dropbox_root)  gt 0 then self.dropbox_root  = dropbox_root
+	if n_elements(local_root)    gt 0 then self.local_root    = local_root
+	if n_elements(mirror_root)   gt 0 then self.mirror_root   = mirror_root
+	IF N_Elements(nSegment)      GT 0 THEN self.nSegment      = nSegment > 1
+	
+	;REMOTE_ROOT
+	IF N_Elements(remote_root) GT 0 THEN BEGIN
+		;Parse the URI for a scheme and host
+		self -> ParseURI, remote_root, SCHEME=scheme, HOST=host
+		IF scheme EQ '' || host EQ '' $
+			THEN MrPrintF, 'LogWarn', 'REMOTE_ROOT must have a URL scheme and host. Ignoring.' $
+			ELSE self -> IDLnetURL::SetProperty, URL_SCHEME=scheme, URL_HOST=host
+	ENDIF
 	
 	;Offline options
 	;   - NO_DOWNLOAD depends on OFFLINE
@@ -1318,12 +1637,23 @@ end
 ;   Convert a web URI to a directory structure.
 ;
 ; :Private:
+;
+; :Params:
+;       URI:        in, required, type=string/strarr
+;                   A remote URI for which the equivalent local location is desired.
+;
+; :Keywords:
+;       MIRROR:     in, optional, type=string
+;                   If set, MIRROR_ROOT will be used as the local root directory instead
+;                       of LOCAL_ROOT.
 ;-
-function MrWebURI::uri2dir, uri
-	compile_opt strictarr
-	on_error, 2
+FUNCTION MrWebURI::uri2dir, uri, $
+MIRROR=mirror
+	Compile_Opt strictarr
+	On_Error, 2
 
-	nURI = n_elements(uri)
+	nURI = N_Elements(uri)
+	root = Keyword_Set(mirror) ? self.mirror_root : self.local_root
 
 	;Breakdown the URLs
 	self -> ParseURI, uri, $
@@ -1334,24 +1664,27 @@ function MrWebURI::uri2dir, uri
 	;Extract the directory and file names
 	basename = self -> Path_BaseName(path)
 	dirname  = self -> Path_DirName(path)
-	
+
 	;Create the directory chain
-	if nURI eq 1 then begin
-		dir = filepath(basename, $
-		               ROOT_DIR     = self.local_root, $
-		               SUBDIRECTORY = [scheme, host, strsplit(dirname, '/', /EXTRACT)])
-	endif else begin
-		dir = strarr(nURI)
-		for i = 0, nURI-1 do begin
-			dir[i] = filepath(basename[i], $
-			                  ROOT_DIR     = self.local_root, $
-			                  SUBDIRECTORY = [scheme[i], host[i], dirname[i]])
-		endfor
-	endelse
+	IF nURI EQ 1 THEN BEGIN
+		subdir = [scheme, host, StrSplit(dirname, '/', /EXTRACT)]
+		subdir = subdir[self.nSegment-1:*]
+		dir    = FilePath( basename, $
+		                   ROOT_DIR     = root, $
+		                   SUBDIRECTORY = subdir)
+	ENDIF ELSE BEGIN
+		dir = StrArr(nURI)
+		FOR i = 0, nURI-1 DO BEGIN
+			subdir = [scheme[i], host[i], StrSplit(dirname[i], '/', /EXTRACT)]
+			subdir = subdir[self.nSegment-1:*]
+			dir[i] = FilePath( basename[i], $
+			                   ROOT_DIR     = root, $
+			                   SUBDIRECTORY = subdir )
+		ENDFOR
+	ENDELSE
 	
-	
-	return, dir
-end
+	RETURN, dir
+END
 
 
 ;+
@@ -1520,21 +1853,23 @@ end
 ;       OFFLINE:        in, optional, type=boolean, default=0
 ;                       If set, the object will function in offline mode (search for
 ;                           files locally). Automatically sets `NO_DOWNLOAD` to the same value.
-;       REMOTE_ROOT:    in, optional, type=string, default=MRWEBDATA_REMOTE_ROOT environment variable
-;                       Remote root directory where data is saved.
 ;       VERBOSE:        in, optional, type=boolean, default=0
 ;                       If set, status messages will be printed to standard output.
+;       _REF_EXTRA:     in, optional, type=boolean, default=0
+;                       Any additional keyword accepted by the ::SetProperty method
+;                           is also accepted here.
 ;
 ; :Returns:
 ;       If successful, a valid MrWebURI object will be returned.
 ;-
 function MrWebURI::init, uri, $
+COPY_TO_LOCAL=copy_to_local, $
 DROPBOX_ROOT=dropbox_root, $
 LOCAL_ROOT=local_root, $
 MIRROR_ROOT=mirror_root, $
 NO_DOWNLOAD=no_download, $
+NSEGMENT=nSegment, $
 OFFLINE=offline, $
-REMOTE_ROOT=remote_root, $
 VERBOSE=verbose, $
 _REF_EXTRA=extra
 	compile_opt idl2
@@ -1546,6 +1881,9 @@ _REF_EXTRA=extra
 		MrPrintF, 'LogErr'
 		return, 0
 	endif
+	
+	;General defaults
+	IF N_Elements(nSegment) EQ 0 THEN nSegment = 1
 
 	;Create an IDLnetURL object
 	success = self -> IDLnetURL::Init(CALLBACK_FUNCTION='MrWebURI_Callback')
@@ -1573,11 +1911,13 @@ _REF_EXTRA=extra
 	endif
 	
 	;Set properties
-	self -> SetProperty, OFFLINE       = offline, $
-	                     NO_DOWNLOAD   = no_download, $
+	self -> SetProperty, COPY_TO_LOCAL = copy_to_local, $
 	                     DROPBOX_ROOT  = dropbox_root, $
 	                     LOCAL_ROOT    = local_root, $
 	                     MIRROR_ROOT   = mirror_root, $
+	                     NO_DOWNLOAD   = no_download, $
+	                     NSEGMENT      = nSegment, $
+	                     OFFLINE       = offline, $
 	                     REMOTE_ROOT   = remote_root, $
 	                     VERBOSE       = verbose, $
 	                     _STRICT_EXTRA = extra
@@ -1594,11 +1934,14 @@ end
 ;                           Class definition structure.
 ;
 ; :Fields:
-;       OFFLINE:        Flag for working in offline mode
-;       NO_DOWNLOAD:    Flag for using only local files
+;       COPY_TO_LOCAL:  Flag for copying mirrored files into local directory
+;       DROPBOX_ROOT:   A (flat) directory where new files are temporarily stored
 ;       LOCAL_ROOT:     Local directory root where files are to be saved.
-;       MIRROR_ROOT:    Root of remote mirror directory at which to find data.
-;       REMOTE_ROOT:    Remote directory where data is stored.
+;       MIRROR_ROOT:    Root of local or remote mirror directory at which to find data.
+;       NO_DOWNLOAD:    Flag for using only those files that are found locally.
+;       NSEGMENT:       The N-th segment into the remote path at which the local path begins.
+;       OFILE:          A MrFileURI object.
+;       OFFLINE:        Flag for working in offline mode
 ;-
 pro MrWebURI__Define, class
 	compile_opt idl2
@@ -1606,12 +1949,13 @@ pro MrWebURI__Define, class
 	class = { MrWebURI, $
 	          inherits IDLnetURL, $
 	          inherits MrURI, $
-	          oFile:        obj_new(), $
-	          offline:      0B, $
-	          no_download:  0B, $
-	          dropbox_root: '', $
-	          local_root:   '', $
-	          mirror_root:  '', $
-	          remote_root:  '' $
+	          copy_to_local: 0B, $
+	          dropbox_root:  '', $
+	          local_root:    '', $
+	          mirror_root:   '', $
+	          no_download:   0B, $
+	          nSegment:      0L, $
+	          oFile:         obj_new(), $
+	          offline:       0B $
 	        }
 end

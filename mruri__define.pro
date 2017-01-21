@@ -47,7 +47,7 @@
 ;
 ; :History:
 ;   Modification History::
-;       2013-06-28  -   Written by Matthew Argall.
+;       2013-06-28  -   Written by Matthew Argall
 ;-
 ;*****************************************************************************************
 ;+
@@ -136,7 +136,7 @@ SUCCESS=success
 	;Relative to the current directory: "./"
 	endif else if stregex(destination, '^\.' + pathsep + '?', /BOOLEAN) then begin
 		relPath = stregex(destination, '^\.(' + pathsep + '(.*))?', /SUBEXP, /EXTRACT)
-		relPath = destOut[2]
+		relPath = relPath[2]
 		absPath = relPath eq '' ? '' : self -> Path_Append(relPath, ROOT=self.path)
 		
 		;Build the new URI
@@ -202,6 +202,522 @@ end
 
 
 ;+
+;   Filter files by time range and version number.
+;
+; :Params:
+;       FILEMATCH:          in, required, type=string
+;                           A file pattern with MrTokens to be matched against `FILE`.
+;       FILES:              in, required, type=string
+;                           Names of the files to be filtered.
+;
+; :Keywords:
+;       COUNT:              out, optional, type=integer
+;                           Number of files that pass the filter.
+;       CLOSEST:            in, optional, type=boolean, default=0
+;                           If set, then the file closest to the start of the data interval
+;                               will be kept. This is useful if file names do not contain
+;                               and end time.
+;       NEWEST:             out, optional, type=boolean
+;                           If set, then the newest version of each file will be kept.
+;                               This is the default if `VERSION` is not given.
+;       RELAXED_TSTART:     out, optional, type=boolean, default=0
+;                           [Not implemented yet].
+;       VERSION:            out, optional, type=string, default=''
+;                           Set equal to the version number of the files to keep.
+;-
+FUNCTION MrURI::Filter, files, fileMatch, $
+COUNT=count, $
+CLOSEST=closest, $
+NEWEST=newest, $
+RELAXED_TSTART=relaxed_tstart, $
+VERSION=version
+	Compile_Opt idl2
+	On_Error, 2
+
+	;Filter by time
+	files = self -> FilterTime( fileMatch, files, $
+	                            COUNT          = count, $
+	                            CLOSEST        = closest, $
+	                            RELAXED_TSTART = relaxed_tstart )
+	
+	;Filter by version
+	IF count GT 0 THEN BEGIN
+		files = self -> FilterVersion( files, $
+		                               COUNT   = count, $
+		                               NEWEST  = newest, $
+		                               VERSION = version )
+	ENDIF
+	
+	RETURN, files
+END
+
+
+;+
+;   Filter files by their time stamps.
+;
+;   Times within file names (as specified by FPATTERN) as well as the start and end times
+;   of the data interval (TSTART and TEND as specified by TPATTERN) must be convertible
+;   to ISO-8601 format by MrTimeParser (i.e. converted to '%Y-%M-%dT%H:%m:%S'). Once
+;   all times are in the same format, they are converted to Julian days and compared.
+;
+;
+; :Params:
+;       FILES:          in, required, type=string/strarr
+;                       File name(s) to be filterd.
+;       TSTART:         in, optional, type=string, default=''
+;                       An ISO-8601 string specifying the start of an interval
+;                           of interest. Any file containing this start time will
+;                           be included in the results. If this parameter is
+;                           provided, `FILE_PATH` must contain time tokens. If
+;                           `FILE_PATH` does not contain both a start and end time
+;                           outlining the data interval contained in the file,
+;                           the search results may include files that do not
+;                           contain `TSTART`.
+;       TEND:           in, optional, type=string, default=''
+;                       An ISO-8601 string specifying the start of an interval
+;                           of interest. Any file containing this end time will
+;                           be included in the results. If this parameter is
+;                           provided, `FILE_PATH` must contain time tokens. If
+;                           `FILE_PATH` does not contain both a start and end time
+;                           outlining the data interval contained in the file,
+;                           the search results may include files that do not
+;                           contain `TEND`.
+;
+; :Keywords:
+;       CLOSEST:        in, optional, type=boolean, default=0
+;                       Find the nearest file with a start time <= `TSTART`.
+;                           This option is ignored unless `TSTART` is specified.
+;                           If `TEND` is also given, the file that starts <= `TEND`
+;                           will serve as the upper limit of files times. All
+;                           files within the range are returned.
+;       COUNT:          out, optional, type=integer
+;                       Number of files found.
+;       FPATTERN:       in, optional, type=string, default='%Y%M%d%H%m%S'
+;                       A pattern recognized by MrTokens that represents how time
+;                           is incorporated into the file names.
+;       TPATTERN:       in, optional, type=string, default='%Y-%M-%dT%H:%m:%S'
+;                       If `TSTART` and `TEND` are not ISO-8601 format, then
+;                           use this parameter to specify their MrTokens pattern.
+; 
+;
+; :Returns:
+;       FILE_FILT:      out, required, type=string/strarr
+;                       Those elements of `FILES` that pass the time filter.
+;-
+FUNCTION MrURI::FilterTime, files, $
+CLOSEST=closest, $
+COUNT=count, $
+FPATTERN=fpattern, $
+TPATTERN=tpattern
+	Compile_Opt idl2
+	On_Error, 2
+	
+	;Defaults
+	tf_closest = Keyword_Set(closest)
+	count      = N_Elements(files)
+	outPattern = '%Y-%M-%dT%H:%m:%S'
+	
+	;Restrictions
+	IF self.date_start EQ '' && self.date_end EQ '' THEN RETURN, files
+	IF ~array_equal(MrTokens_IsMatch(files[0], fpattern), 1) THEN Message, 'FILES must match FPATTERN.'
+	
+	;Results
+	file_filt = self -> Path_BaseName(files)
+	dir_filt  = self -> Path_DirName(files)
+	
+	;How to filter
+	tf_tstart = self.date_start NE ''
+	tf_tend   = self.date_end   NE ''
+	
+;-------------------------------------------
+; Find File Start & End Times //////////////
+;-------------------------------------------
+	;
+	; Does the file name include TStart and TEnd?
+	;   - Assume TEnd takes the same form as TStart.
+	;   - Assume TStart does not repeat tokens.
+	;   - Filenames include TStart and TEnd IF the first token OF TStart is repeated.
+	;
+	; Times are put into TimeOrder and converted to integers. This allows
+	; for easy comparison. 
+	;
+
+	;Extract tokens
+	tokens = MrTokens_Extract(self.fpattern, COUNT=nTokens, POSITIONS=token_pos)
+	
+	;Is there an end time in the file name?
+	;   - Look for a repeated token
+	;   - Repeated token will be found at position TOKEN_POS[0]+2+IREPEAT
+	iRepeat = strpos( strmid(self.fpattern, token_pos[0]+2), '%'+tokens[0] )
+	tf_fend = iRepeat NE -1
+
+	;Convert the start time of each file to an integer
+	;  - MrTimeParser will take the last match (i.e. FEND)
+	;  - If the file name has an END time, parse up to the first repeated token.
+	IF tf_fend $
+		THEN MrTimeParser, file_filt, strmid(self.fpattern, 0, iRepeat+2+token_pos[0]), outPattern, fstart $
+		ELSE MrTimeParser, file_filt, self.fpattern, tpattern, fstart
+
+	;Convert the END time to an integer
+	IF tf_fend THEN BEGIN
+		MrTimeParser, file_filt, strmid(self.fpattern, iRepeat+token_pos[0]+2), outPattern, fend
+	ENDIF
+	
+;-------------------------------------------
+; Convert to Julian Dates //////////////////
+;-------------------------------------------
+	;File times
+	
+	;Start
+	MrTimeParser_Breakdown, Temporary(fstart), outPattern, $
+	                        YEAR=yr, MONTH=mo, DAY=day, HOUR=hr, MINUTE=mnt, SECOND=sec
+	fs_jul = JulDay( Temporary(mo), Temporary(day), Temporary(yr), Temporary(hr), Temporary(mnt), Temporary(sec) )
+	
+	;End
+	IF tf_fend THEN BEGIN
+		MrTimeParser_Breakdown, Temporary(fend), outPattern, $
+		                        YEAR=yr, MONTH=mo, DAY=day, HOUR=hr, MINUTE=mnt, SECOND=sec
+		fe_jul = JulDay( Temporary(mo), Temporary(day), Temporary(yr), Temporary(hr), Temporary(mnt), Temporary(sec) )
+	ENDIF
+	
+	
+	;Time interval
+	temp_tstart = tstart
+	temp_tend   = tend
+	IF tpattern NE outpattern THEN BEGIN
+		IF tf_tstart THEN MrTimeParser, self.date_start, self.tpattern, outPattern, temp_tstart
+		IF tf_tend   THEN MrTimeParser, self.date_end,   self.tpattern, outPattern, temp_tend
+	ENDIF
+		
+	;Breakdown
+	MrTimeParser_Breakdown, Temporary(temp_tstart), outPattern, $
+	                        YEAR=syr, MONTH=smo, DAY=sday, HOUR=shr, MINUTE=smnt, SECOND=ssec
+	MrTimeParser_Breakdown, Temporary(temp_tend), outPattern, $
+	                        YEAR=eyr, MONTH=emo, DAY=eday, HOUR=ehr, MINUTE=emnt, SECOND=esec
+	
+	;Convert to Julian
+	ts_jul = JulDay( Temporary(smo), Temporary(sday), Temporary(syr), Temporary(shr), Temporary(smnt), Temporary(ssec) )
+	te_jul = JulDay( Temporary(emo), Temporary(eday), Temporary(eyr), Temporary(ehr), Temporary(emnt), Temporary(esec) )
+
+;-------------------------------------------
+; Filter by Time ///////////////////////////
+;-------------------------------------------
+	;
+	; We decide which files to keep by first considering what happens when
+	; we have all information: tstart, tend, fStart, and fEnd. In this
+	; CASE, we want to choose any files that contain any portion OF the
+	; time interval [tstart, tend]. 
+	;
+	;                    |----Time Interval----|
+	;   [--File Interval--]        ....       [--File Interval--]
+	;
+	; This means any interval such that
+	;   ( (tstart >= fStart) & (tstart <  fEnd) )
+	; OR
+	;   ( (tend   >  fStart) & (tend   <= fEnd) )
+	;
+	; If we have less information, we simply remove the clause containing
+	; the missing information.
+	;
+	
+	;File name includes END times
+	IF tf_fend THEN BEGIN
+		CASE 1 OF
+			(tf_tstart && tf_tend): ikeep = Where( ( (ts_jul GE fs_jul) and (ts_jul LE fe_jul) ) or $
+			                                       ( (te_jul GE fs_jul) and (te_jul LE fe_jul) ), count )
+			tf_tstart:              ikeep = Where( (ts_jul GE fs_jul) and (ts_jul LE fe_jul), count )
+			tf_tend:                ikeep = Where( (te_jul GE fs_jul) and (te_jul LE fe_jul), count )
+		END
+		
+	;File name does not include END times
+	ENDIF ELSE BEGIN
+		CASE 1 OF
+			(tf_tstart && tf_tend): ikeep = Where( (ts_jul GE fs_jul) or (te_jul GE fs_jul), count )
+			tf_tstart:              ikeep = Where(ts_jul GE fs_jul, count)
+			tf_tend:                ikeep = Where(te_jul GE fs_jul, count)
+		END
+	ENDELSE
+	
+	;Select the subset OF files
+	IF count GT 0 THEN BEGIN
+		dir_filt  = dir_filt[ikeep]
+		file_filt = file_filt[ikeep]
+		fs_jul    = fs_jul[ikeep]
+		IF tf_fend THEN fe_jul = fe_jul[ikeep]
+	ENDIF ELSE BEGIN
+		dir_filt  = ''
+		file_filt = ''
+	ENDELSE
+
+;-------------------------------------------
+; Closest Time /////////////////////////////
+;-------------------------------------------
+	;
+	; We want to find the closes time to 'TStart'
+	;   - If the file has both a start and END time, there is
+	;     sufficient information to select the appropriate files.
+	;     We do not need to check anything.
+	;   - If only a start time exists in the file name, THEN the
+	;     selection process above may be too liberal. Find the
+	;     file that starts at or just before 'TStart'.
+	;   - If 'TEnd' was also given, find the file that starts
+	;     just before 'TEnd', and select all files between
+	;     'TStart' and 'TEnd'. Otherwise, just pick the file
+	;     associated with 'TStart'.
+	;
+	IF tf_closest && ~tf_fend && count GT 0 THEN BEGIN
+		;
+		; Find the file that starts closest in time to TSTART
+		;
+
+		;Find the largest start time <= TSTART
+		istart = Where(fs_jul LE ts_jul, nstart)
+		IF nstart EQ 0 THEN BEGIN
+			istart = 0
+			nstart = 1
+		ENDIF
+		void   = max(fs_jul[istart], imax)
+		istart = istart[imax]
+		
+		;Find the smallest END time >= TEND
+		IF tf_tend THEN BEGIN
+			iend = Where(fs_jul LE te_jul, nend)
+			void = Max(fs_jul[iend], imax)
+			iend = iend[imax]
+		ENDIF ELSE BEGIN
+			iend = istart
+			nend = 0
+		ENDELSE
+
+		;Select the found files
+		IF nstart + nend GT 0 THEN BEGIN
+			IF istart GT iend THEN Message, 'TSTART must be before TEND.'
+			dir_filt  = dir_filt[istart:iend]
+			file_filt = file_filt[istart:iend]
+			count     = iend - istart + 1
+		ENDIF ELSE BEGIN
+			dir_filt  = ''
+			file_filt = ''
+			count     = 0
+		ENDELSE
+	ENDIF
+
+;-------------------------------------------
+; Finish Up ////////////////////////////////
+;-------------------------------------------
+	;Combine the directories and file names
+	FOR i = 0, count - 1 do file_filt[i] = FilePath(file_filt[i], ROOT_DIR=dir_filt[i])
+	
+	;Return scalar IF one result
+	IF i EQ 1 THEN file_filt = file_filt[0]
+	RETURN, file_filt
+END
+
+
+;+
+;   Filter files by time range and version number.
+;
+; :Params:
+;       FILES:              in, required, type=string
+;                           Names of the files to be filtered.
+;
+; :Keywords:
+;       COUNT:              out, optional, type=integer
+;                           Number of files that pass the filter.
+;       NEWEST:             out, optional, type=boolean
+;                           If set, then the newest version of each file will be kept.
+;                               This is the default if `VERSION` is not given.
+;       VERSION:            out, optional, type=string, default=''
+;                           Set equal to the version number of the files to keep.
+;-
+function MrURI::FilterVersion, files, $
+COUNT=count, $
+NEWEST=newest, $
+VERSION=version
+	compile_opt idl2
+	on_error, 2
+	
+	;Get the newest version
+	if n_elements(version) eq 0 then version = ''
+	newest = keyword_set(newest) || version eq ''
+	
+	;Separate the filename from the basename to focus on versions.
+	nFiles   = n_elements(files)
+	allFiles = file_basename(files)
+	allDirs  = file_dirname(files)
+	
+;-------------------------------------------
+; Find Uniq Files //////////////////////////
+;-------------------------------------------
+	;Replace the version number with the empty string
+	vpos = stregex(allFiles, self.vRegex, LENGTH=vlen)
+	if nFiles eq 1 then begin
+		vpos = [vpos]
+		vlen = [vlen]
+	endif
+
+	;Concatenate the parts before and after the version number
+	files_noversion = strmid(allFiles, 0, transpose(vpos)) + $              ;Before version
+	                  strmid(allFiles, transpose(vpos) + transpose(vlen))   ;After version
+
+	;Find unique values
+	iUniq = MrUniq(files_noversion, IARRAY=iArray, NUNIQ=count, /SORT)
+	
+	;Keep only the unique files
+	dirsFound  = strarr(count)
+	filesFound = strarr(count)
+
+;-------------------------------------------
+; Newest Version ///////////////////////////
+;-------------------------------------------
+	if newest then begin
+		;Search through all unique files
+		for i = 0, count - 1 do begin
+			;Pick out the copies
+			iCopies = where(iArray eq iUniq[i], nCopies)
+			
+			;Pick the first file as the newest
+			newestFile = allFiles[iCopies[0]]
+			newestDir  = allDirs[iCopies[0]]
+			
+			;Step through all copies
+			for j = 1, nCopies - 1 do begin
+				;Compare against remaining files
+				if MrFile_VersionCompare(allFiles[iCopies[j]], newestFile, vRegex) eq 1 then begin
+					newestFile = allFiles[iCopies[j]]
+					newestDir  = allDirs[iCopies[j]]
+				endif
+			endfor
+			
+			;Replace unique files with newest file and directory
+			dirsFound[i]  = newestDir
+			filesFound[i] = newestFile
+		endfor
+
+;-------------------------------------------
+; Specific Version /////////////////////////
+;-------------------------------------------
+	endif else if version ne '' then begin
+		;Search through all unique files
+		n = 0
+		for i = 0, count - 1 do begin
+			;Pick out the copies
+			iCopies = where(iArray eq iUniq[i], nCopies)
+			
+			;Search for matches
+			tf_match = MrFile_VersionCompare(allFiles[iCopies], version, vRegex) eq 0
+			iMatch   = where(tf_match, nMatch)
+			
+			;Keep the first match
+			if nMatch ne 0 then begin
+				filesFound[n] = allFiles[iCopies[iMatch[0]]]
+				dirsFound[n]  = allDirs[iCopies[iMatch[0]]]
+				n++
+			endif
+		endfor
+		count = n - 1
+
+		;Trim results
+		if count gt 0 then begin
+			filesFound = filesFound[0:count]
+			dirsFound  = dirsFound[0:count]
+		endif else begin
+			filesFound = ''
+			dirsFound  = ''
+		endelse
+	endif
+
+;-------------------------------------------
+; Return Results ///////////////////////////
+;-------------------------------------------
+	;Pair directory and filename
+	if count gt 0 then $
+		for i = 0, count - 1 do filesFound[i] = filepath(filesFound[i], ROOT_DIR=dirsFound[i])
+	if count eq 1 then filesFound = filesFound[0]
+	
+
+	return, filesFound
+end
+
+
+;+
+;   Get object properties.
+;
+; :Keywords:
+;       DATE_START:     out, optional, type=boolean
+;                       Start time of interval in which file names are desired.
+;       DATE_END:       out, optional, type=boolean
+;                       End time of interval in which file names are desired.
+;       FPATTERN:       in, optional, type=string
+;                       A MrTokens pattern that matches the time pattern in the file names.
+;       HOST:           in, optional, type=string
+;                       The URL host.
+;       PASSWORD:       in, optional, type=string
+;                       Password that grants access to the URL.
+;       PATH:           in, optional, type=string
+;                       The URL path.
+;       PORT:           in, optional, type=string
+;                       Port used to connect to the URL.
+;       QUERY:          in, optional, type=string
+;                       URL query string.
+;       SCHEME:         in, optional, type=string
+;                       URL scheme.
+;       TPATTERN:       in, optional, type=string
+;                       A MrTokens pattern that matches `DATE_START` and `DATE_END`.
+;       USERNAME:       in, optional, type=string
+;                       Username of user with access to site.
+;       VERBOSE:        out, optional, type=boolean
+;                       If set, status messages are printed to the console.
+;       VREGEX:         out, optional, type=string
+;                       A regular expression that parses the file version number.
+;-
+pro MrURI::GetProperty, $
+DATE_START=date_start, $
+DATE_END=date_end, $
+FPATTERN=fpattern, $
+FRAGMENT=fragment, $
+HOST=host, $
+PASSWORD=password, $
+PATH=path, $
+PORT=port, $
+QUERY=query, $
+SCHEME=scheme, $
+TPATTERN=tpattern, $
+USERNAME=username, $
+VERBOSE=verbose, $
+VREGEX=vregex
+	compile_opt idl2
+
+	;Catch errors
+	catch, the_error
+	if the_error ne 0 then begin
+		catch, /CANCEL
+		MrPrintF, 'LogErr'
+		return
+	endif
+
+	;URL Properties
+	if Arg_Present(fragment) gt 0 then fragment = self.fragment
+	if arg_present(host)     gt 0 then host     = self.host
+	if Arg_Present(password) gt 0 then password = self.password
+	if Arg_Present(path)     gt 0 then path     = self.path
+	if Arg_Present(port)     gt 0 then port     = self.port
+	if arg_present(query)    gt 0 then query    = self.query
+	if Arg_Present(scheme)   gt 0 then scheme   = self.scheme
+	if Arg_Present(username) gt 0 then username = self.username
+	if Arg_Present(verbose)  gt 0 then verbose  = self.verbose
+	
+	;Other object properties
+	if Arg_Present(date_start) THEN MrTimeParser, self.date_start, '%Y-%M-%DT%H:%m:%S', self.tpattern, date_start
+	if Arg_Present(date_end)   THEN MrTimeParser, self.date_end,   '%Y-%M-%DT%H:%m:%S', self.tpattern, date_end
+	IF Arg_Present(fpattern)   THEN fpattern   = self.fpattern
+	IF Arg_Present(tpattern)   THEN tpattern   = self.tpattern
+	if Arg_Present(verbose)    THEN verbose    = self.verbose
+	IF Arg_Present(vregex)     THEN vregex     = self.vregex
+end
+
+
+;+
 ;   Get the URL
 ;
 ; :Params:
@@ -228,30 +744,6 @@ function MrURI::GetDirList
 	message, 'The GetDirList method must be over-ridden by a subclass.'
 	
 	return, -1
-end
-
-
-;+
-;   Get object properties.
-;
-; :Keywords:
-;       TSTART:         out, optional, type=boolean
-;                       Start time of interval in which file names are desired.
-;       TEND:           out, optional, type=boolean
-;                       End time of interval in which file names are desired.
-;       VERBOSE:        out, optional, type=boolean
-;                       If set, status messages are printed to the console.
-;-
-pro MrURI::GetProperty, $
-DATE_START=date_start, $
-DATE_END=date_end, $
-VERBOSE=verbose
-	compile_opt idl2
-	on_error, 2
-	
-	if arg_present(date_start) then date_start = self.date_start
-	if arg_present(date_end)   then date_end   = self.date_end
-	if arg_present(verbose)    then verbose    = self.verbose
 end
 
 
@@ -1029,63 +1521,136 @@ end
 ;+
 ;   Set the URI.
 ;
+;   Calling Sequence:
+;       oURI -> SetURI, uri
+;       oURI -> SetURI, KEYWORD=value, ...
+;
 ; :Params:
 ;       URI:            in, required, type=string
-;                       The URL to be made the current uri.
+;                       The URL to be made the current uri. If present, all keywords
+;                           are ignored.
+;
+; :Keywords:
+;       FRAGMENT:       in, optional, type=string
+;                       URL fragment; appears at end trailing a #.
+;       HOST:           in, optional, type=string
+;                       Host of the URL address.
+;       PATH:           in, optional, type=string
+;                       Path of the URL destination.
+;       PORT:           in, optional, type=string
+;                       Port to use for connection.
+;       QUERY:          in, optional, type=string
+;                       Query string, appearing after the ?.
+;       SCHEME:         in, optional, type=string
+;                       URL scheme.
 ;-
-pro MrURI::SetURI, uri, success
-	compile_opt idl2
-	on_error, 2
+PRO MrURI::SetURI, uri, $
+FRAGMENT=fragment, $
+HOST=host, $
+PATH=path, $
+PORT=port, $
+QUERY=query, $
+SCHEME=scheme
+	Compile_Opt idl2
+	On_Error, 2
+	
+	;Parse the URI if it was given
+	IF N_Elements(uri) GT 0 THEN BEGIN
+		self -> ParseURI, uri, $
+		                  FRAGMENT     = fragment, $
+		                  HOST         = host, $
+		                  PASSWORD     = password, $
+		                  PATH         = path, $
+		                  PORT         = port, $
+		                  QUERY        = query, $
+		                  SCHEME       = scheme, $
+		                  USERNAME     = username
+		IF scheme EQ '' THEN Message, 'URI could not be parsed: "' + uri + '".'
+	ENDIF
 
-	message, 'MrURI::SetURI must be over-ridden by a subclass.'
+	;Set URL properties
+	IF N_Elements(fragment) GT 0 THEN self.fragment = fragment
+	IF N_Elements(host)     GT 0 THEN self.host     = host
+	IF N_Elements(password) GT 0 THEN self.password = password
+	IF N_Elements(path)     GT 0 THEN self.path     = path
+	IF N_Elements(port)     GT 0 THEN self.port     = port
+	IF N_Elements(query)    GT 0 THEN self.query    = query
+	IF N_Elements(scheme)   GT 0 THEN self.scheme   = scheme
+	IF N_Elements(username) GT 0 THEN self.username = username
 end
 
 
 ;+
-;   Set the URI.
+;   Able to recursively find files from a file URI, given a URI or URI pattern.
+;   URI patterns can have any token recognized by MrTokens.pro.
 ;
 ; :Params:
-;       URI:            in, required, type=string
-;                       The URL to be made the current uri.
+;       URL:            in, required, type=string
+;                       URI or URI pattern to be found.
+;
+; :Keywords:
+;       COUNT:          out, optional, type=integer
+;                       Number of links found.
+;       ERROR:          out, optional, type=integer
+;                       Variable to recieve the error code. 0 indicates no error. If
+;                           present, the error message will be supressed.
 ;-
-function MrURI::Search_Filter, link, tokens, $
-COUNT=count
+function MrURI::Search2, uri, $
+COUNT=count, $
+ERROR=the_error
 	compile_opt idl2
-	on_error, 2
-	count = n_elements(link)
-	
-	;Return if there are no filter conditions
-	if self.date_start ne '' || self.date_end ne '' then return, link
-	
-	
-	;Were start or end times given?
-	MrTimeParser_Breakdown, link, tokens, $
-	                        YEAR  = year, $
-	                        MONTH = month, $
-	                        DAY   = day
-	
-	;Keep the directories/files that fall within the specified dates
-	tf_pass = replicate(0B, count)
-	if self.date_start ne '' then begin
-		if year[0]  ne '' then tf_pass = tf_pass or ( fix(year)  ge fix(strmid(self.date_start, 0, 4)) )
-		if month[0] ne '' then tf_pass = tf_pass or ( fix(month) ge fix(strmid(self.date_start, 5, 2)) )
-		if day[0]   ne '' then tf_pass = tf_pass or ( fix(day)   ge fix(strmid(self.date_start, 8, 2)) )
-	endif
-	if self.date_end ne '' then begin
-		if year[0]  ne '' then tf_pass = tf_pass or ( fix(year)  lt fix(strmid(self.date_end, 0, 4)) )
-		if month[0] ne '' then tf_pass = tf_pass or ( fix(month) lt fix(strmid(self.date_end, 5, 2)) )
-		if day[0]   ne '' then tf_pass = tf_pass or ( fix(day)   lt fix(strmid(self.date_end, 8, 2)) )
-	endif
-	
-	;Filter results
-	iPass = where(tf_pass, count)
-	if nPass eq 0 then begin
-		self -> CD, purl
+
+	;Catch errors
+	catch, the_error
+	if the_error ne 0 then begin
+		catch, /CANCEL
+		if arg_present(the_error) eq 0 then MrPrintF, 'LogErr'
 		return, ''
-	endif else begin
-		linkOut = linkOut[iPass]
-	endelse
-end
+	endif
+	
+	;Breakdown the start and end dates
+	MrTimeParser_Breakdown, self.date_start, YEAR=syr, MONTH=smo, DAY=sday, HOUR=shr, MINUTE=smnt, SECOND=ssec
+	MrTimeParser_Breakdown, self.date_end,   YEAR=eyr, MONTH=emo, DAY=eday, HOUR=ehr, MINUTE=emnt, SECOND=esec
+	
+	;Convert to Julian dates
+	jul_start = CalDat(smo, sday, syr)
+	jul_end   = CalDat(emo, eday, eyr)
+	
+	;Generate times between these dates
+	times = TimeGen( FINAL=jul_end, START=jul_start, UNIT='day' )
+	JulDay, times, month, day, year
+	
+	;Separate the path from the file name
+	path = self -> Path_DirName(uri)
+	file = self -> Path_BaseName(uri)
+	
+	
+	;Replace tokens with dates
+	theTokens = MrTokens_Extract(uri, POSITIONS=iTokens, COUNT=nTokens)
+	aRoot     = StrMid(uri, 0, iTokens[i])
+	FOR i = 0, nTokens - 1 DO BEGIN
+		;Extract the current token
+		aToken = StrMid(uri, iTokens[i], 2)
+		
+		;Perform substitution
+		CASE aToken OF
+			'%Y': aRoot += String(year, FORMAT='(i04)')
+			'%y': aRoot += String(year MOD 100, FORMAT='(i02)')
+			'%d': aRoot += String(day, FORMAT='(i02)')
+			'%D': aRoot += String( MrDate2DOY( month, day, year ), FORMAT='(i03)' )
+			'%C': aRoot += String( MrMonthNumber2Name( month ), FORMAT='(a0)' )
+			'%c': aRoot += String( MrMonthNumber2Name( month, /ABBR ), FORMAT='(a0)' )
+			ELSE: ;Ignore
+		ENDCASE
+		
+		;Append the protion between tokens
+		IF i LT nTokens-1 $
+			THEN aRoot += StrMid(uri, iTokens[i]+2, iTokens[i+1]) $
+			ELSE aRoot += StrMid(uri, iTokens[i]+2)
+	ENDFOR
+
+	RETURN, tree
+END
 
 
 ;+
@@ -1266,372 +1831,29 @@ end
 
 
 ;+
-;   Filter by a specific version
-;
-; :Private:
-;-
-function MrURI::FilterTime, fileMatch, files, $
-COUNT=count, $
-CLOSEST=closest, $
-RELAXED_TSTART=relaxed_tstart, $
-TIMEORDER=time_order, $
-TPATTERN=tpattern
-	compile_opt idl2
-	on_error, 2
-	
-	;Filter both start and end times?
-	tf_closest = keyword_set(closest)
-	tf_tstart  = self.date_start ne ''
-	tf_tend    = self.date_end   ne ''
-	if n_elements(time_order) eq 0 then time_order = '%Y%M%d%H%m%S'
-	if n_elements(tpattern)   eq 0 then tpattern   = '%Y-%M-%d'
-	
-	;No need to filter by time if tstart or tend are not provided
-	if ~tf_tstart && ~tf_tend then return, files
-	
-	;Input file and directory name
-	srchFile = self -> Path_BaseName(fileMatch)
-	srchDir  = self -> Path_DirName(fileMatch)
-	
-	filesFound = self -> Path_BaseName(files)
-	dirsFound  = self -> Path_DirName(files)
-
-;-------------------------------------------
-; Filter by Time ///////////////////////////
-;-------------------------------------------
-	;
-	; Does the file name include TStart and TEnd?
-	;   - Assume TEnd takes the same form as TStart.
-	;   - Assume TStart does not repeat tokens.
-	;   - Filenames include TStart and TEnd if the first token of TStart is repeated.
-	;
-	; Times are put into TimeOrder and converted to integers. This allows
-	; for easy comparison. 
-	;
-
-	;Extract tokens
-	tokens = MrTokens_Extract(srchFile, COUNT=nTokens, POSITIONS=token_pos)
-	
-	;Is there an end time in the file name?
-	;   - Look for a repeated token
-	;   - Repeated token will be found at position TOKEN_POS[0]+2+IREPEAT
-	iRepeat = strpos( strmid(srchFile, token_pos[0]+2), '%'+tokens[0] )
-	tf_fend = iRepeat ne -1
-
-	;Convert the start time of each file to an integer
-	;  - MrTimeParser will take the last match (i.e. FEND)
-	;  - If the file name has an end time, parse up to the first repeated token.
-	if tf_fend $
-		then MrTimeParser, filesFound, strmid(srchFile, 0, iRepeat+2+token_pos[0]), time_order, fstart $
-		else MrTimeParser, filesFound, srchFile, time_order, fstart
-	ifstart = long64(fstart)
-
-	;Convert the end time to an integer
-	if tf_fend then begin
-		MrTimeParser, filesFound, strmid(srchFile, iRepeat+token_pos[0]+2), time_order, fend
-		ifend = long64(fend)
-	endif
-		
-	;Convert input times to integers
-	if tf_tstart then begin
-		MrTimeParser, self.date_start, tpattern, time_order, temp_start
-		itstart = long64(temporary(temp_start))
-	endif
-	if tf_tend then begin
-		MrTimeParser, self.date_end, tpattern, time_order, temp_tend
-		itend = long64(temporary(temp_tend))
-	endif
-
-;-------------------------------------------
-; Filename Includes End Time ///////////////
-;-------------------------------------------
-	;
-	; We decide which files to keep by first considering what happens when
-	; we have all information: tstart, tend, fStart, and fEnd. In this
-	; case, we want to choose any files that contain any portion of the
-	; time interval [tstart, tend]. 
-	;
-	;                    |----Time Interval----|
-	;   [--File Interval--]        ....       [--File Interval--]
-	;
-	; This means any interval such that
-	;   ( (tstart >= fStart) & (tstart <  fEnd) )
-	; OR
-	;   ( (tend   >  fStart) & (tend   <= fEnd) )
-	;
-	; If we have less information, we simply remove the clause containing
-	; the missing information.
-	;
-	if tf_fend then begin
-		case 1 of
-			(tf_tstart && tf_tend): ikeep = where( ( (itstart ge ifstart) and (itstart le ifend) ) or $
-				                                   ( (itend   ge ifstart) and (itend   le ifend) ), count )
-			tf_tstart:              ikeep = where( (itstart ge ifstart) and (itstart le ifend), count )
-			tf_tend:                ikeep = where( (itend   ge ifstart) and (itend   le ifend), count )
-		endcase
-
-;-------------------------------------------
-; Filename Does Not Include End Time ///////
-;-------------------------------------------
-	endif else begin
-		case 1 of
-			(tf_tstart && tf_tend): ikeep = where( (itstart ge ifstart) or (itend ge ifstart), count )
-			tf_tstart:              ikeep = where(itstart ge ifStart, count)
-			tf_tend:                ikeep = where(itend   ge ifStart, count)
-		end
-	endelse
-	
-	;Select the subset of files
-	if count gt 0 then begin
-		dirsFound  = dirsFound[ikeep]
-		filesFound = filesFound[ikeep]
-		fstart     = fstart[ikeep]
-		if tf_fend then fend = fend[ikeep]
-	endif else begin
-		dirsFound  = ''
-		filesFound = ''
-	endelse
-
-;-------------------------------------------
-; Closest Time /////////////////////////////
-;-------------------------------------------
-	;
-	; We want to find the closes time to 'TStart'
-	;   - If the file has both a start and end time, there is
-	;     sufficient information to select the appropriate files.
-	;     We do not need to check anything.
-	;   - If only a start time exists in the file name, then the
-	;     selection process above may be too liberal. Find the
-	;     file that starts at or just before 'TStart'.
-	;   - If 'TEnd' was also given, find the file that starts
-	;     just before 'TEnd', and select all files between
-	;     'TStart' and 'TEnd'. Otherwise, just pick the file
-	;     associated with 'TStart'.
-	;
-	if tf_closest && ~tf_fend && count gt 0 then begin
-		;
-		; Find the file that starts closest in time to TSTART
-		;
-
-		;Find the largest start time <= TSTART
-		istart = where(fstart le itstart, nstart)
-		if nstart eq 0 then begin
-			istart = 0
-			nstart = 1
-		endif
-		void   = max(fstart[istart], imax)
-		istart = istart[imax]
-		
-		;Find the smallest end time >= TEND
-		if tf_tend then begin
-			iend = where(fstart le itend, nend)
-			void = max(fstart[iend], imax)
-			iend = iend[imax]
-		endif else begin
-			iend = istart
-			nend = 0
-		endelse
-
-		;Select the found files
-		if nstart + nend gt 0 then begin
-			if istart gt iend then message, 'TSTART must be before TEND.'
-			dirsFound  = dirsFound[istart:iend]
-			filesFound = filesFound[istart:iend]
-			count      = iend - istart + 1
-		endif else begin
-			dirsFound  = ''
-			filesFound = ''
-			count      = 0
-		endelse
-	endif
-
-	;Create the full file path
-	;   - TODO: URLs use "/" as path separators whereas Windows uses "\".
-	for i = 0, count - 1 do filesFound[i] = filepath(filesFound[i], ROOT_DIR=dirsFound[i])
-	
-	;Return
-	return, filesFound
-end
-
-
-;+
-;   Filter by a specific version
-;
-; :Private:
-;-
-function MrURI::FilterVersion, files, $
-COUNT=count, $
-NEWEST=newest, $
-VERSION=version, $
-VREGEX=vRegex
-	compile_opt idl2
-	on_error, 2
-	
-	;Get the newest version
-	if n_elements(version) eq 0 then version = ''
-	if n_elements(vRegex)  eq 0 then vRegex  = '([0-9]+)\.([0-9]+)\.([0-9]+)'
-	newest = keyword_set(newest) || version eq ''
-	
-	;Separate the filename from the basename to focus on versions.
-	nFiles   = n_elements(files)
-	allFiles = file_basename(files)
-	allDirs  = file_dirname(files)
-	
-;-------------------------------------------
-; Find Uniq Files //////////////////////////
-;-------------------------------------------
-	;Replace the version number with the empty string
-	vpos = stregex(allFiles, vRegex, LENGTH=vlen)
-	if nFiles eq 1 then begin
-		vpos = [vpos]
-		vlen = [vlen]
-	endif
-
-	;Concatenate the parts before and after the version number
-	files_noversion = strmid(allFiles, 0, transpose(vpos)) + $              ;Before version
-	                  strmid(allFiles, transpose(vpos) + transpose(vlen))   ;After version
-
-	;Find unique values
-	iUniq = MrUniq(files_noversion, IARRAY=iArray, NUNIQ=count, /SORT)
-	
-	;Keep only the unique files
-	dirsFound  = strarr(count)
-	filesFound = strarr(count)
-
-;-------------------------------------------
-; Newest Version ///////////////////////////
-;-------------------------------------------
-	if newest then begin
-		;Search through all unique files
-		for i = 0, count - 1 do begin
-			;Pick out the copies
-			iCopies = where(iArray eq iUniq[i], nCopies)
-			
-			;Pick the first file as the newest
-			newestFile = allFiles[iCopies[0]]
-			newestDir  = allDirs[iCopies[0]]
-			
-			;Step through all copies
-			for j = 1, nCopies - 1 do begin
-				;Compare against remaining files
-				if MrFile_VersionCompare(allFiles[iCopies[j]], newestFile, vRegex) eq 1 then begin
-					newestFile = allFiles[iCopies[j]]
-					newestDir  = allDirs[iCopies[j]]
-				endif
-			endfor
-			
-			;Replace unique files with newest file and directory
-			dirsFound[i]  = newestDir
-			filesFound[i] = newestFile
-		endfor
-
-;-------------------------------------------
-; Specific Version /////////////////////////
-;-------------------------------------------
-	endif else if version ne '' then begin
-		;Search through all unique files
-		n = 0
-		for i = 0, count - 1 do begin
-			;Pick out the copies
-			iCopies = where(iArray eq iUniq[i], nCopies)
-			
-			;Search for matches
-			tf_match = MrFile_VersionCompare(allFiles[iCopies], version, vRegex) eq 0
-			iMatch   = where(tf_match, nMatch)
-			
-			;Keep the first match
-			if nMatch ne 0 then begin
-				filesFound[n] = allFiles[iCopies[iMatch[0]]]
-				dirsFound[n]  = allDirs[iCopies[iMatch[0]]]
-				n++
-			endif
-		endfor
-		count = n - 1
-
-		;Trim results
-		if count gt 0 then begin
-			filesFound = filesFound[0:count]
-			dirsFound  = dirsFound[0:count]
-		endif else begin
-			filesFound = ''
-			dirsFound  = ''
-		endelse
-	endif
-
-;-------------------------------------------
-; Return Results ///////////////////////////
-;-------------------------------------------
-	;Pair directory and filename
-	if count gt 0 then $
-		for i = 0, count - 1 do filesFound[i] = filepath(filesFound[i], ROOT_DIR=dirsFound[i])
-	if count eq 1 then filesFound = filesFound[0]
-	
-
-	return, filesFound
-end
-
-
-;+
-;   Get object properties.
-;
-; :Keywords:
-;       ALL:            in, optional, type=boolean
-;                       If set, all links will be displayed. By default, only links
-;                           starting with a number or a letter will be displayed.
-;       DELAY:          out, optional, type=float
-;                       Number of seconds to wait for a double click. If a second click
-;                           is not detected before DELAY seconds, a single click event
-;                           will be generated.
-;-
-pro MrURI::GetProperty, $
-FRAGMENT=fragment, $
-HOST=host, $
-PASSWORD=password, $
-PATH=path, $
-PORT=port, $
-QUERY=query, $
-SCHEME=scheme, $
-USERNAME=username, $
-VERBOSE=verbose
-	compile_opt idl2
-
-	;Catch errors
-	catch, the_error
-	if the_error ne 0 then begin
-		catch, /CANCEL
-		MrPrintF, 'LogErr'
-		return
-	endif
-stop
-	;Set properties
-	if arg_present(fragment) gt 0 then fragment = self.fragment
-	if arg_present(host)     gt 0 then host     = self.host
-	if arg_present(password) gt 0 then password = self.password
-	if arg_present(path)     gt 0 then path     = self.path
-	if arg_present(port)     gt 0 then port     = self.port
-	if arg_present(query)    gt 0 then query    = self.query
-	if arg_present(scheme)   gt 0 then scheme   = self.scheme
-	if arg_present(username) gt 0 then username = self.username
-	if arg_present(verbose)  gt 0 then verbose  = self.verbose
-end
-
-
-;+
 ;   Set object properties.
 ;
 ; :Keywords:
-;       ALL:            in, optional, type=boolean
-;                       If set, all links will be displayed. By default, only links
-;                           starting with a number or a letter will be displayed.
-;       DELAY:          in, optional, type=float
-;                       Number of seconds to wait for a double click. If a second click
-;                           is not detected before DELAY seconds, a single click event
-;                           will be generated.
+;       DATE_START:     in, optional, type=boolean
+;                       Start time of interval in which file names are desired.
+;       DATE_END:       in, optional, type=boolean
+;                       End time of interval in which file names are desired.
+;       FPATTERN:       in, optional, type=string
+;                       A MrTokens pattern that matches the time pattern in the file names.
+;       TPATTERN:       in, optional, type=string
+;                       A MrTokens pattern that matches `DATE_START` and `DATE_END`.
+;       VERBOSE:        in, optional, type=boolean
+;                       If set, status messages are printed to the console.
+;       VREGEX:         in, optional, type=string
+;                       A regular expression that parses the file version number.
 ;-
 pro MrURI::SetProperty, $
 DATE_START=date_start, $
 DATE_END=date_end, $
-VERBOSE=verbose
+FPATTERN=fpattern, $
+TPATTERN=tpattern, $
+VERBOSE=verbose, $
+VREGEX=vregex
 	compile_opt idl2
 
 	;Catch errors
@@ -1643,20 +1865,25 @@ VERBOSE=verbose
 	endif
 
 	;Set properties
-	if n_elements(verbose) gt 0 then self.verbose = keyword_set(verbose)
+	IF N_Elements(tpattern)  GT 0 THEN self.tpattern = tpattern
+	IF N_Elements(fpattern)  GT 0 THEN self.fpattern = fpattern
+	if N_Elements(verbose)   gt 0 then self.verbose  = Keyword_Set(verbose)
+	IF N_Elements(vregex)    GT 0 THEN self.vregex   = vregex
 	
 	;TSTART
+	;   - Store internally as ISO-8601 format
 	if n_elements(date_start) gt 0 then begin
-		if MrTokens_IsMatch(date_start, '%Y-%M-%d') $
-			then self.date_start = date_start $
-			else message, 'DATE_START must be formatted as %Y-%M-%d.'
+		if MrTokens_IsMatch(date_start, self.tpattern) $
+			then MrTimeParser, date_start, self.tpattern, '%Y-%M-%DT%H:%m:%S', self.date_start $
+			else message, 'DATE_START does not match TPATTERN: "' + self.tpattern + '".'
 	endif
 	
 	;TEND
+	;   - Store internally as ISO-8601 format
 	if n_elements(date_end) gt 0 then begin
-		if MrTokens_IsMatch(date_end, '%Y-%M-%d') $
-			then self.date_end = date_end $
-			else message, 'DATE_END must be formatted as %Y-%M-%d.'
+		if MrTokens_IsMatch(date_end, self.tpattern) $
+			then MrTimeParser, date_end, self.tpattern, '%Y-%M-%DT%H:%m:%S', self.date_end $
+			else message, 'DATE_END does not match TPATTERN: "' + self.tpattern + '".'
 	endif
 end
 
@@ -1691,23 +1918,29 @@ end
 ;                       Web address from which to download data.
 ;
 ; :Keywords:
-;       ALL:            in, optional, type=boolean, default=0
-;                       If set, all links will be displayed. By default, only links
-;                           starting with a number or a letter will be displayed.
-;       DELAY:          in, optional, type=float, default=0.2
-;                       Number of seconds to wait for a double click. If a second click
-;                           is not detected before DELAY seconds, a single click event
-;                           will be generated.
-;       DIRECTORY:      in, optional, type=string
-;                       Directory in which to save downloaded files.
-;       GROUP_LEADER:   in, optional, type=long
-;                       Widget ID of the widget that will serve as the group leader.
+;       DATE_START:     in, optional, type=boolean
+;                       Start time of interval in which file names are desired.
+;       DATE_END:       in, optional, type=boolean
+;                       End time of interval in which file names are desired.
+;       FPATTERN:       in, optional, type=string, default='%Y%M%d%H%m%S'
+;                       A MrTokens pattern that matches the time pattern in the file names.
+;       TPATTERN:       in, optional, type=string, default='%Y-%M-%d'
+;                       A MrTokens pattern that matches `DATE_START` and `DATE_END`.
+;       VERBOSE:        in, optional, type=boolean
+;                       If set, status messages are printed to the console.
+;       VREGEX:         in, optional, type=string, default='([0-9]+)\.([0-9]+)\.([0-9]+)'
+;                       A regular expression that parses the file version number.
 ;
 ; :Returns:
 ;       If successful, a valid MrURI object will be returned.
 ;-
 function MrURI::init, uri, $
-VERBOSE=verbose
+DATE_START=date_start, $
+DATE_END=date_end, $
+FPATTERN=fpattern, $
+TPATTERN=tpattern, $
+VERBOSE=verbose, $
+VREGEX=vregex
 	compile_opt idl2
 
 	;Catch errors
@@ -1719,14 +1952,26 @@ VERBOSE=verbose
 	endif
 
 	;Defaults
-	self.verbose = keyword_set(verbose)
-	if n_elements(uri) gt 0 then self -> CD, uri
+	self.verbose = Keyword_Set(verbose)
+	IF N_Elements(fpattern) EQ 0 THEN fpattern  = '%Y%M%d%H%m%S'
+	IF N_Elements(tpattern) EQ 0 THEN tpattern  = '%Y-%M-%d'
+	IF N_Elements(vregex)   EQ 0 THEN vregex    = '([0-9]+)\.([0-9]+)\.([0-9]+)'
+	
+	;Set the URI
+	IF N_Elements(uri) GT 0 then self -> CD, uri
+	
+	;Set object properties
+	self -> SetProperty, DATE_END   = date_end, $
+	                     DATE_START = date_start, $
+	                     FPATTERN   = fpattern, $
+	                     TPATTERN   = tpattern, $
+	                     VREGEX     = vregex
 	
 	;Allocate heap
-	self.field_values = ptr_new(/ALLOCATE_HEAP)
+	self.field_values = Ptr_New(/ALLOCATE_HEAP)
 
-	return, 1
-end
+	RETURN, 1
+END
 
 
 ;+
@@ -1761,7 +2006,10 @@ pro MrURI__Define, class
 	          port:         '', $
 	          query:        '', $
 	          scheme:       '', $
+	          fpattern:     '', $
+	          tpattern:     '', $
 	          username:     '', $
-	          verbose:      0B $
+	          verbose:      0B, $
+	          vregex:       '' $
 	        }
 end
