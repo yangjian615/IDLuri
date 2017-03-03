@@ -59,24 +59,130 @@ function MrURI::_OverloadPrint
 	on_error, 2
 	
 	;Create strings
-	fragment = string('  Fragment', '=', self.fragment, FORMAT='(a-26, a-2, a0)')
-	host     = string('  Host',     '=', self.host,     FORMAT='(a-26, a-2, a0)')
-	path     = string('  Path',     '=', self.path,     FORMAT='(a-26, a-2, a0)')
-	query    = string('  Query',    '=', self.query,    FORMAT='(a-26, a-2, a0)')
-	scheme   = string('  Scheme',   '=', self.scheme,   FORMAT='(a-26, a-2, a0)')
-	username = string('  Username', '=', self.username, FORMAT='(a-26, a-2, a0)')
+	fragment   = string('  Fragment',   '=', self.fragment,   FORMAT='(a-26, a-2, a0)')
+	host       = string('  Host',       '=', self.host,       FORMAT='(a-26, a-2, a0)')
+	path       = string('  Path',       '=', self.path,       FORMAT='(a-26, a-2, a0)')
+	query      = string('  Query',      '=', self.query,      FORMAT='(a-26, a-2, a0)')
+	scheme     = string('  Scheme',     '=', self.scheme,     FORMAT='(a-26, a-2, a0)')
+	username   = string('  Username',   '=', self.username,   FORMAT='(a-26, a-2, a0)')
+	date_start = string('  Date_Start', '=', self.date_start, FORMAT='(a-26, a-2, a0)')
+	date_end   = string('  Date_End',   '=', self.date_end,   FORMAT='(a-26, a-2, a0)')
+	fpattern   = string('  FPattern',   '=', self.fpattern,   FORMAT='(a-26, a-2, a0)')
+	tpattern   = string('  TPattern',   '=', self.tpattern,   FORMAT='(a-26, a-2, a0)')
+	vregex     = string('  VRegEx',     '=', self.vregex,     FORMAT='(a-26, a-2, a0)')
 
 	;Output array
-	outStr = [ [ fragment ], $
-	           [ host     ], $
-	           [ path     ], $
-	           [ query    ], $
-	           [ scheme   ], $
-	           [ username ] $
+	outStr = [ [ fragment   ], $
+	           [ host       ], $
+	           [ path       ], $
+	           [ query      ], $
+	           [ scheme     ], $
+	           [ username   ], $
+	           [ date_start ], $
+	           [ date_end   ], $
+	           [ fpattern   ], $
+	           [ tpattern   ], $
+	           [ vregex     ] $
 	         ]
 
 	;Print the array
 	return, outStr
+end
+
+
+;+
+;   Build a URI
+;
+; :Keywords:
+;       HOST:           out, optional, type=string/strarr
+;                       Name of the remote server. Can be an IP address.
+;       PASSWORD:       out, optional, type=string/strarr
+;                       Password used when authenitcating with a remote server.
+;       PATH:           out, optional, type=string/strarr
+;                       Full path to the network resource.
+;       PORT:           out, optional, type=string/strarr
+;                       Value of the TCP/IP port that the remote server monitors for
+;                           incoming requests.
+;       QUERY:          out, optional, type=string/strarr
+;                       Portion of the URL following the "?" character.
+;       SCHEME:         out, optional, type=string/strarr
+;                       Name of the protocol used to access the remote server.
+;                           Values are {http | https | ftp | ftps}.
+;       USERNAME:       out, optional, type=string/strarr
+;                       Username used when authenticating with a remote server.
+;
+; :Returns:
+;       URL:            in, optional, type=string/strarr
+;                       URL to be parsed.
+;-
+function MrURI::BuildURI, $
+FRAGMENT=fragment, $
+HOST=host, $
+PASSWORD=password, $
+PATH=path, $
+PORT=port, $
+QUERY=query, $
+SCHEME=scheme, $
+USERNAME=username
+	compile_opt idl2
+	on_error, 2
+
+	;Allocate memory
+	if n_elements(authority) eq 0 then authority = ''
+	if n_elements(fragment)  eq 0 then fragment  = ''
+	if n_elements(host)      eq 0 then host      = ''
+	if n_elements(password)  eq 0 then password  = ''
+	if n_elements(path)      eq 0 then path      = ''
+	if n_elements(port)      eq 0 then port      = ''
+	if n_elements(query)     eq 0 then query     = ''
+	if n_elements(scheme)    eq 0 then scheme    = ''
+	if n_elements(userinfo)  eq 0 then userinfo  = ''
+	if n_elements(username)  eq 0 then username  = ''
+	
+;-----------------------------------------------------
+; Parse URI \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+;-----------------------------------------------------
+	
+	;
+	; Syntax Components
+	;   The scheme and path components are required, though the path may be
+	;   empty (no characters).  When authority is present, the path must
+	;   either be empty or begin with a slash ("/") character.  When
+	;   authority is not present, the path cannot begin with two slash
+	;   characters ("//").  These restrictions result in five different ABNF
+	;   rules for a path (Section 3.3), only one of which will match any
+	;   given URI reference.
+	;
+	;      URI         = scheme ":" hier-part [ "?" query ] [ "#" fragment ]
+	;
+	;      hier-part   = "//" authority path-abempty
+	;                  / path-absolute
+	;                  / path-rootless
+	;                  / path-empty
+	;
+	; Example
+	;         foo://example.com:8042/over/there?name=ferret#nose
+	;         \_/   \______________/\_________/ \_________/ \__/
+	;          |           |            |            |        |
+	;       scheme     authority       path        query   fragment
+	;          |   _____________________|__
+	;         / \ /                        \
+	;         urn:example:animal:ferret:nose
+	;
+	
+	uri = scheme + '://'
+	if username ne '' || password ne '' then uri += username + ':' + password + '@'
+	if host ne '' then uri += host
+	if port ne '' then uri += ':' + port
+	
+	;If path starts with "/", no need to introduce one.
+	if strmid(path, 0, 1) ne '/' then uri += '/'
+	
+	if path     ne '' then uri += path
+	if query    ne '' then uri += '?' + query
+	if fragment ne '' then uri += '#' + fragment
+
+	return, uri
 end
 
 
@@ -202,6 +308,22 @@ end
 
 
 ;+
+;   Get the URL
+;
+; :Params:
+;       URI:            out, required, type=string
+;                       The URI to be made the current uri.
+;-
+pro MrURI::Error_Handler
+	compile_opt idl2
+	on_error, 2
+	
+	;Generate an error
+	MrPrintF, 'LogErr'
+end
+
+
+;+
 ;   Filter files by time range and version number.
 ;
 ; :Params:
@@ -235,11 +357,10 @@ VERSION=version
 	On_Error, 2
 
 	;Filter by time
-	files = self -> FilterTime( fileMatch, files, $
+	files = self -> FilterTime( files, $
 	                            COUNT          = count, $
-	                            CLOSEST        = closest, $
-	                            RELAXED_TSTART = relaxed_tstart )
-	
+	                            CLOSEST        = closest )
+
 	;Filter by version
 	IF count GT 0 THEN BEGIN
 		files = self -> FilterVersion( files, $
@@ -292,13 +413,6 @@ END
 ;                           files within the range are returned.
 ;       COUNT:          out, optional, type=integer
 ;                       Number of files found.
-;       FPATTERN:       in, optional, type=string, default='%Y%M%d%H%m%S'
-;                       A pattern recognized by MrTokens that represents how time
-;                           is incorporated into the file names.
-;       TPATTERN:       in, optional, type=string, default='%Y-%M-%dT%H:%m:%S'
-;                       If `TSTART` and `TEND` are not ISO-8601 format, then
-;                           use this parameter to specify their MrTokens pattern.
-; 
 ;
 ; :Returns:
 ;       FILE_FILT:      out, required, type=string/strarr
@@ -306,9 +420,7 @@ END
 ;-
 FUNCTION MrURI::FilterTime, files, $
 CLOSEST=closest, $
-COUNT=count, $
-FPATTERN=fpattern, $
-TPATTERN=tpattern
+COUNT=count
 	Compile_Opt idl2
 	On_Error, 2
 	
@@ -319,7 +431,7 @@ TPATTERN=tpattern
 	
 	;Restrictions
 	IF self.date_start EQ '' && self.date_end EQ '' THEN RETURN, files
-	IF ~array_equal(MrTokens_IsMatch(files[0], fpattern), 1) THEN Message, 'FILES must match FPATTERN.'
+	IF ~array_equal(MrTokens_IsMatch(files[0], self.fpattern), 1) THEN Message, 'FILES must match FPATTERN.'
 	
 	;Results
 	file_filt = self -> Path_BaseName(files)
@@ -583,7 +695,7 @@ VERSION=version
 			;Step through all copies
 			for j = 1, nCopies - 1 do begin
 				;Compare against remaining files
-				if MrFile_VersionCompare(allFiles[iCopies[j]], newestFile, vRegex) eq 1 then begin
+				if MrFile_VersionCompare(allFiles[iCopies[j]], newestFile, self.vRegex) eq 1 then begin
 					newestFile = allFiles[iCopies[j]]
 					newestDir  = allDirs[iCopies[j]]
 				endif
@@ -605,7 +717,7 @@ VERSION=version
 			iCopies = where(iArray eq iUniq[i], nCopies)
 			
 			;Search for matches
-			tf_match = MrFile_VersionCompare(allFiles[iCopies], version, vRegex) eq 0
+			tf_match = MrFile_VersionCompare(allFiles[iCopies], version, self.vRegex) eq 0
 			iMatch   = where(tf_match, nMatch)
 			
 			;Keep the first match
@@ -723,13 +835,42 @@ end
 ; :Params:
 ;       URI:            out, required, type=string
 ;                       The URI to be made the current uri.
+;
+; :Keywords:
+;       COUNT:          out, optional, type=integer
+;                       Number of files found.
+;       _REF_EXTRA:     in, optional, type=any
+;                       Any keyword accepted by ::Filter is also accepted here.
+;
+; :Returns:
+;       FILES:          out, optional, type=string/strarr
+;                       Names of the files found.
 ;-
-function MrURI::Get, uri
-	compile_opt idl2
-	on_error, 2
+FUNCTION MrURI::Get, uri, $
+COUNT=count, $
+_REF_EXTRA=extra
+	Compile_Opt idl2
 	
-	message, 'This method must be over-ridden by a subclass.'
-end
+	Catch, the_error
+	IF the_error NE 0 THEN BEGIN
+		Catch, /CANCEL
+		MrPrintF, 'LogErr'
+		count = 0
+		RETURN, ''
+	ENDIF
+	
+	;Search for files
+	files = self -> Search( uri, COUNT=nFiles)
+	IF nFiles EQ 0 THEN Message, 'No files found matching: "' + uri + '".'
+	
+	;Filter the files
+	files = self -> Filter( files, $
+	                        COUNT      = count, $
+	                        _STRICT_EXTRA = extra )
+	
+	;Return
+	RETURN, files
+END
 
 
 ;+
@@ -768,118 +909,6 @@ function MrURI::GetURI
 	                        SCHEME   = self.scheme, $
 	                        USERNAME = self.username )
 	
-	return, uri
-end
-
-
-;+
-;   Get the URL
-;
-; :Params:
-;       URI:            out, required, type=string
-;                       The URI to be made the current uri.
-;-
-pro MrURI::Error_Handler
-	compile_opt idl2
-	on_error, 2
-	
-	;Generate an error
-	MrPrintF, 'LogErr'
-end
-
-
-;+
-;   Build a URI
-;
-; :Keywords:
-;       HOST:           out, optional, type=string/strarr
-;                       Name of the remote server. Can be an IP address.
-;       PASSWORD:       out, optional, type=string/strarr
-;                       Password used when authenitcating with a remote server.
-;       PATH:           out, optional, type=string/strarr
-;                       Full path to the network resource.
-;       PORT:           out, optional, type=string/strarr
-;                       Value of the TCP/IP port that the remote server monitors for
-;                           incoming requests.
-;       QUERY:          out, optional, type=string/strarr
-;                       Portion of the URL following the "?" character.
-;       SCHEME:         out, optional, type=string/strarr
-;                       Name of the protocol used to access the remote server.
-;                           Values are {http | https | ftp | ftps}.
-;       USERNAME:       out, optional, type=string/strarr
-;                       Username used when authenticating with a remote server.
-;
-; :Returns:
-;       URL:            in, optional, type=string/strarr
-;                       URL to be parsed.
-;-
-function MrURI::BuildURI, $
-FRAGMENT=fragment, $
-HOST=host, $
-PASSWORD=password, $
-PATH=path, $
-PORT=port, $
-QUERY=query, $
-SCHEME=scheme, $
-USERNAME=username
-	compile_opt idl2
-	on_error, 2
-
-	;Allocate memory
-	if n_elements(authority) eq 0 then authority = ''
-	if n_elements(fragment)  eq 0 then fragment  = ''
-	if n_elements(host)      eq 0 then host      = ''
-	if n_elements(password)  eq 0 then password  = ''
-	if n_elements(path)      eq 0 then path      = ''
-	if n_elements(port)      eq 0 then port      = ''
-	if n_elements(query)     eq 0 then query     = ''
-	if n_elements(scheme)    eq 0 then scheme    = ''
-	if n_elements(userinfo)  eq 0 then userinfo  = ''
-	if n_elements(username)  eq 0 then username  = ''
-	
-;-----------------------------------------------------
-; Parse URI \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
-;-----------------------------------------------------
-	
-	;
-	; Syntax Components
-	;   The scheme and path components are required, though the path may be
-	;   empty (no characters).  When authority is present, the path must
-	;   either be empty or begin with a slash ("/") character.  When
-	;   authority is not present, the path cannot begin with two slash
-	;   characters ("//").  These restrictions result in five different ABNF
-	;   rules for a path (Section 3.3), only one of which will match any
-	;   given URI reference.
-	;
-	;      URI         = scheme ":" hier-part [ "?" query ] [ "#" fragment ]
-	;
-	;      hier-part   = "//" authority path-abempty
-	;                  / path-absolute
-	;                  / path-rootless
-	;                  / path-empty
-	;
-	; Example
-	;         foo://example.com:8042/over/there?name=ferret#nose
-	;         \_/   \______________/\_________/ \_________/ \__/
-	;          |           |            |            |        |
-	;       scheme     authority       path        query   fragment
-	;          |   _____________________|__
-	;         / \ /                        \
-	;         urn:example:animal:ferret:nose
-	;
-	
-	uri = scheme + '://'
-	if username ne '' || password ne '' then uri += username + ':' + password + '@'
-	if host ne '' then uri += host
-	if port ne '' then uri += ':' + port
-	
-	;If path starts with "/", no need to introduce one.
-	if strmid(path, 0, 1) ne '/' then uri += '/'
-	
-	if path     ne '' then uri += path
-	if query    ne '' then uri += '?' + query
-	if fragment ne '' then uri += '#' + fragment
-
 	return, uri
 end
 
@@ -1519,68 +1548,6 @@ end
 
 
 ;+
-;   Set the URI.
-;
-;   Calling Sequence:
-;       oURI -> SetURI, uri
-;       oURI -> SetURI, KEYWORD=value, ...
-;
-; :Params:
-;       URI:            in, required, type=string
-;                       The URL to be made the current uri. If present, all keywords
-;                           are ignored.
-;
-; :Keywords:
-;       FRAGMENT:       in, optional, type=string
-;                       URL fragment; appears at end trailing a #.
-;       HOST:           in, optional, type=string
-;                       Host of the URL address.
-;       PATH:           in, optional, type=string
-;                       Path of the URL destination.
-;       PORT:           in, optional, type=string
-;                       Port to use for connection.
-;       QUERY:          in, optional, type=string
-;                       Query string, appearing after the ?.
-;       SCHEME:         in, optional, type=string
-;                       URL scheme.
-;-
-PRO MrURI::SetURI, uri, $
-FRAGMENT=fragment, $
-HOST=host, $
-PATH=path, $
-PORT=port, $
-QUERY=query, $
-SCHEME=scheme
-	Compile_Opt idl2
-	On_Error, 2
-	
-	;Parse the URI if it was given
-	IF N_Elements(uri) GT 0 THEN BEGIN
-		self -> ParseURI, uri, $
-		                  FRAGMENT     = fragment, $
-		                  HOST         = host, $
-		                  PASSWORD     = password, $
-		                  PATH         = path, $
-		                  PORT         = port, $
-		                  QUERY        = query, $
-		                  SCHEME       = scheme, $
-		                  USERNAME     = username
-		IF scheme EQ '' THEN Message, 'URI could not be parsed: "' + uri + '".'
-	ENDIF
-
-	;Set URL properties
-	IF N_Elements(fragment) GT 0 THEN self.fragment = fragment
-	IF N_Elements(host)     GT 0 THEN self.host     = host
-	IF N_Elements(password) GT 0 THEN self.password = password
-	IF N_Elements(path)     GT 0 THEN self.path     = path
-	IF N_Elements(port)     GT 0 THEN self.port     = port
-	IF N_Elements(query)    GT 0 THEN self.query    = query
-	IF N_Elements(scheme)   GT 0 THEN self.scheme   = scheme
-	IF N_Elements(username) GT 0 THEN self.username = username
-end
-
-
-;+
 ;   Able to recursively find files from a file URI, given a URI or URI pattern.
 ;   URI patterns can have any token recognized by MrTokens.pro.
 ;
@@ -1873,18 +1840,110 @@ VREGEX=vregex
 	;TSTART
 	;   - Store internally as ISO-8601 format
 	if n_elements(date_start) gt 0 then begin
-		if MrTokens_IsMatch(date_start, self.tpattern) $
-			then MrTimeParser, date_start, self.tpattern, '%Y-%M-%DT%H:%m:%S', self.date_start $
-			else message, 'DATE_START does not match TPATTERN: "' + self.tpattern + '".'
+		if date_start eq '' then begin
+			self.date_start = date_start
+		endif else if MrTokens_IsMatch(date_start, self.tpattern) then begin
+			MrTimeParser, date_start, self.tpattern, '%Y-%M-%DT%H:%m:%S', temp_start
+			self.date_start = Temporary(temp_start)
+		endif else begin
+			message, 'DATE_START does not match TPATTERN: "' + self.tpattern + '".'
+		endelse
 	endif
 	
 	;TEND
 	;   - Store internally as ISO-8601 format
 	if n_elements(date_end) gt 0 then begin
-		if MrTokens_IsMatch(date_end, self.tpattern) $
-			then MrTimeParser, date_end, self.tpattern, '%Y-%M-%DT%H:%m:%S', self.date_end $
-			else message, 'DATE_END does not match TPATTERN: "' + self.tpattern + '".'
+		if date_end eq '' then begin
+			self.date_end = date_end
+		endif else if MrTokens_IsMatch(date_end, self.tpattern) then begin
+			MrTimeParser, date_end, self.tpattern, '%Y-%M-%DT%H:%m:%S', temp_end
+			self.date_end = Temporary(temp_end)
+		endif else begin
+			message, 'DATE_END does not match TPATTERN: "' + self.tpattern + '".'
+		endelse
 	endif
+end
+
+
+;+
+;   Set the URI.
+;
+;   Calling Sequence:
+;       oURI -> SetURI, uri
+;       oURI -> SetURI, KEYWORD=value, ...
+;
+; :Params:
+;       URI:            in, required, type=string
+;                       The URL to be made the current uri. If present, all keywords
+;                           are ignored.
+;       SUCCESS:        out, optional, type=boolean
+;                       Flag indicating that the URI was set successfully (true) or
+;                           unsuccessfully (false). Set to a named variable to suppress
+;                           error reporting.
+;
+; :Keywords:
+;       FRAGMENT:       in, optional, type=string
+;                       URL fragment; appears at end trailing a #.
+;       HOST:           in, optional, type=string
+;                       Host of the URL address.
+;       PATH:           in, optional, type=string
+;                       Path of the URL destination.
+;       PORT:           in, optional, type=string
+;                       Port to use for connection.
+;       QUERY:          in, optional, type=string
+;                       Query string, appearing after the ?.
+;       SCHEME:         in, optional, type=string
+;                       URL scheme.
+;-
+PRO MrURI::SetURI, uri, success, $
+FRAGMENT=fragment, $
+HOST=host, $
+PATH=path, $
+PORT=port, $
+QUERY=query, $
+SCHEME=scheme
+	Compile_Opt idl2
+	
+	Catch, the_error
+	IF the_error NE 0 THEN BEGIN
+		Catch, /CANCEL
+		On_Error, 2
+		success = 0B
+		IF ~Arg_Present(success) THEN Message, /REISSUE_LAST
+		RETURN
+	ENDIF
+	
+	;Assume failure
+	success = 0B
+	
+	;Parse the URI if it was given
+	IF N_Elements(uri) GT 0 && uri NE '' THEN BEGIN
+		self -> ParseURI, uri, $
+		                  FRAGMENT     = fragment, $
+		                  HOST         = host, $
+		                  PASSWORD     = password, $
+		                  PATH         = path, $
+		                  PORT         = port, $
+		                  QUERY        = query, $
+		                  SCHEME       = scheme, $
+		                  USERNAME     = username
+		
+		;Could it be parsed?
+		IF scheme EQ '' THEN Message, 'URI could not be parsed: "' + uri + '".'
+	ENDIF
+
+	;Set URL properties
+	IF N_Elements(fragment) GT 0 THEN self.fragment = fragment
+	IF N_Elements(host)     GT 0 THEN self.host     = host
+	IF N_Elements(password) GT 0 THEN self.password = password
+	IF N_Elements(path)     GT 0 THEN self.path     = path
+	IF N_Elements(port)     GT 0 THEN self.port     = port
+	IF N_Elements(query)    GT 0 THEN self.query    = query
+	IF N_Elements(scheme)   GT 0 THEN self.scheme   = scheme
+	IF N_Elements(username) GT 0 THEN self.username = username
+	
+	;Report success
+	success = 1B
 end
 
 

@@ -1,10 +1,10 @@
 ; docformat = 'rst'
 ;
 ; NAME:
-;       MrParseURL
+;       MrWeb_Parse_URI
 ;
 ;*****************************************************************************************
-;   Copyright (c) 2014, Matthew Argall                                                   ;
+;   Copyright (c) 2015, Matthew Argall                                                   ;
 ;   All rights reserved.                                                                 ;
 ;                                                                                        ;
 ;   Redistribution and use in source and binary forms, with or without modification,     ;
@@ -79,8 +79,21 @@
 ;       USERNAME:       out, optional, type=string/strarr
 ;                       Username used when authenticating with a remote server.
 ;
+; :Author:
+;    Matthew Argall::
+;    University of New Hampshire
+;    Morse Hall Room 348
+;    8 College Road
+;    Durham, NH 03824
+;    matthew.argall@unh.edu
+;
+; :History:
+;    Modification History::
+;       2015/11/10  -   Written by Matthew Argall
+;       2017/02/06  -   Renamed from MrParseURL to MrWeb_Parse_URI. - MRA
+;
 ;-
-pro MrParseURL, url, $
+pro MrWeb_Parse_URI, url, $
 AUTHORITY=authority, $
 FRAGMENT=fragment, $
 HOST=host, $

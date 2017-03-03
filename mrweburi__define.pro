@@ -62,11 +62,12 @@ function MrWebURI::_OverloadPrint
 	uri_print = self -> MrURI::_OverloadPrint()
 	
 	;Create strings
-	offline      = string('  Offline',      '=', self.offline,      FORMAT='(a-26, a-2, i1)')
-	no_download  = string('  No_Download',  '=', self.no_download,  FORMAT='(a-26, a-2, i1)')
-	dropbox_root = string('  Dropbox_Root', '=', self.dropbox_root, FORMAT='(a-26, a-2, a0)')
-	local_root   = string('  Local_Root',   '=', self.local_root,   FORMAT='(a-26, a-2, a0)')
-	mirror_root  = string('  Mirror_Root',  '=', self.mirror_root,  FORMAT='(a-26, a-2, a0)')
+	offline      = string('  Offline',       '=', self.offline,       FORMAT='(a-26, a-2, i1)')
+	no_download  = string('  No_Download',   '=', self.no_download,   FORMAT='(a-26, a-2, i1)')
+	dropbox_root = string('  Dropbox_Root',  '=', self.dropbox_root,  FORMAT='(a-26, a-2, a0)')
+	local_root   = string('  Local_Root',    '=', self.local_root,    FORMAT='(a-26, a-2, a0)')
+	mirror_root  = string('  Mirror_Root',   '=', self.mirror_root,   FORMAT='(a-26, a-2, a0)')
+	copy         = string('  Copy_To_Local', '=', self.copy_to_local, FORMAT='(a-26, a-2, i1)')
 
 	;Output array
 	outStr = [ [ uri_print    ], $
@@ -74,7 +75,8 @@ function MrWebURI::_OverloadPrint
 	           [ no_download  ], $
 	           [ dropbox_root ], $
 	           [ local_root   ], $
-	           [ mirror_root  ] $
+	           [ mirror_root  ], $
+	           [ copy         ] $
 	         ]
 	
 	;Sort alphabetically
@@ -313,6 +315,95 @@ _REF_EXTRA=extra
 	
 	;Return file names
 	return, fileOut
+end
+
+
+;+
+;   Replace HTML reserved characters with their encoded strings.
+;
+; :Private:
+;
+; :Params:
+;       PASSWORD:           in, required, type=string
+;                           Password for the CSA website.
+;
+; :Returns:
+;       PWD:                Password with reserved characters replaced by encoded ones.
+;-
+function MrWebURI::Check_Password, password
+	compile_opt idl2
+
+	;Catch errors
+	catch, the_error
+	if the_error ne 0 then begin
+		catch, /cancel
+		MrPrintF, 'LogErr'
+		return, ''
+	endif
+
+	;Editable password
+	pass = password
+
+	;Check for reserved characters in password and replace with URL-Encoded equivalents.
+	reserved = ["%","!","#","$","&","'","(",")","*","+",",","/",":",";","=","?","@","[","]"]
+	encoded = ["%25","%21","%23","%24","%26","%27","%28","%29","%2A","%2B","%2C","%2F","%3A","%3B","%3D","%3F","%40","%5B","%5D"]
+
+	;Check each reserved character individually
+	for i = 0, n_elements(reserved) -1 do begin
+		;Start at beginning of string
+		startpos = 0
+		foundpos = 0
+		reserved_positions = -1
+		
+		;Step through each character in the password.
+		;    - Stop if no more reserved characters are found
+		;    - Or if we get to the end of the string.
+		while foundpos ne -1 and startpos le strlen(pass)-1 do begin
+			;Look for the reserved character
+			foundpos = strpos(pass,reserved[i],startpos)
+			
+			;Record where the reserved character was found, then advance.
+			if foundpos ne -1 then begin
+				if startpos eq 0 then reserved_positions = foundpos else reserved_positions = [reserved_positions,foundpos]
+				startpos = foundpos+1
+			endif
+		endwhile
+		
+		;If reserved characters were found
+		if reserved_positions[0] ne -1 then begin
+			
+			;Start at the end of the password, so that as reserved characters are
+			;replaced by encoded strings, the position of other reserved characters within
+			;the password does not change.
+			reserved_positions = reverse(reserved_positions)
+			
+			;Step through each reserved character
+			for j = 0, n_elements(reserved_positions) -1 do begin
+			
+				;Found at end of the password?
+				if reserved_positions[j] eq strlen(pass)-1 then begin
+					pass_before = strmid(pass,0,reserved_positions[j])
+					new_pass = pass_before+encoded[i]
+					pass = new_pass
+					
+				;Found at beginning of the password?
+				endif else if reserved_positions[j] eq 0 then begin
+					pass_after = strmid(pass,reserved_positions[j]+1,strlen(pass)-(reserved_positions[j]+1))
+					new_pass = encoded[i]+pass_after
+					pass = new_pass
+				
+				;Found in the middle of the password.
+				endif else begin
+					pass_before = strmid(pass,0,reserved_positions[j])
+					pass_after = strmid(pass,reserved_positions[j]+1,strlen(pass)-(reserved_positions[j]+1))
+					new_pass = pass_before+encoded[i]+pass_after
+					pass = new_pass
+				endelse
+			endfor
+		endif
+	endfor
+
+	return, pass
 end
 
 
@@ -841,7 +932,6 @@ GROUP_LEADER=group_leader
 			endif else begin
 				self.username = username
 				self.password = password
-				self -> IDLnetURL::SetProperty, URL_USERNAME=username, URL_PASSWORD=password
 			endelse
 		endif
 		
@@ -1094,7 +1184,7 @@ SCHEME=scheme
 ; Parse URI \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 ;-----------------------------------------------------
 	;Call superclass
-	self -> MrURI::SetURI, uri, $
+	self -> MrURI::SetURI, uri, success, $
 	                       FRAGMENT = fragment, $
 	                       HOST     = host, $
 	                       PATH     = path, $
@@ -1166,7 +1256,7 @@ SCHEME=scheme
 				
 				;Unauthorized
 				401: begin
-					MrPrintF, 'Log-In required.'
+					MrPrintF, 'LogText', 'Log-In required.'
 					self -> LogIn
 				endcase
 				
@@ -1188,7 +1278,7 @@ SCHEME=scheme
 ;-----------------------------------------------------
 ; In Case of Failue \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 ;-----------------------------------------------------
-	if ~success then self -> SetURI, uri
+	if ~success then self -> SetURI, old_uri
 end
 
 
@@ -1228,7 +1318,7 @@ NREMOTE=nRemote
 		;MIRROR
 		IF self.mirror_root NE '' THEN BEGIN
 			;Full search of mirror
-			files = self -> SearchMirror(uri, COUNT=count)
+			files = self -> SearchLocal(uri, COUNT=count, /MIRROR)
 			
 			;Filter by time before any additional searches
 			IF count GT 0 $
@@ -1279,7 +1369,7 @@ NREMOTE=nRemote
 ; Search Dropbox \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 ;-----------------------------------------------------
 	;Full search of dropbox files
-	dropbox_files = self -> SearchDropbox(uri, COUNT=nDropbox)
+	dropbox_files = self -> SearchLocal(uri, COUNT=nDropbox, /DROPBOX)
 	
 	IF nDropbox GT 0 THEN BEGIN
 		;Filter by time
@@ -1415,51 +1505,6 @@ END
 
 
 ;+
-;   Search the dropbox directory for files that match the URI.
-;
-; :Params:
-;       URI:            in, required, type=string
-;                       URI to match against files with dropbox.
-;
-; :Keywords:
-;       COUNT:          out, optional, type=integer
-;                       Number of files found.
-;
-; :Returns:
-;       FILES:          out, required, type=string/strarr
-;                       Names of the files that match the `URI`.
-;-
-FUNCTION MrWebURI::SearchDropbox, uri, $
-COUNT=count
-	Compile_Opt idl2
-	On_Error, 2
-	
-	;Pre-emptive return
-	count = 0
-	IF self.dropbox_root EQ '' THEN RETURN, ''
-
-;-----------------------------------------------------
-; Search Dropbox \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
-;-----------------------------------------------------
-	;Create a local URI object
-	;   - Not enough to simply use ::uri2dir because MrTokens may be present.
-	oFile = MrFileURI('file://' + self.dropbox_root)
-
-	;Convert the URI to a directory
-	file_uri = self -> uri2dir(uri)
-
-	;Search for files
-	files = oFile -> Search(file_uri, COUNT=count)
-
-;-----------------------------------------------------
-; Finish \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
-;-----------------------------------------------------
-	Obj_Destroy, oFile
-	RETURN, files
-END
-
-
-;+
 ;   Search the local data repository for files that match the URI.
 ;
 ; :Params:
@@ -1474,10 +1519,22 @@ END
 ;       FILES:          out, required, type=string/strarr
 ;                       Names of the files that match the `URI`.
 ;-
-function MrWebURI::SearchLocal, uri, $
-COUNT=count
+FUNCTION MrWebURI::SearchLocal, uri, $
+COUNT=count, $
+DROPBOX=dropbox, $
+MIRROR=mirror
 	compile_opt idl2
 	on_error, 2
+
+	CASE 1 OF
+		Keyword_Set(mirror):  root = self.mirror_root
+		Keyword_Set(dropbox): root = self.dropbox_root
+		ELSE:                 root = self.local_root
+	ENDCASE
+	
+	;Pre-emptive return
+	count = 0
+	IF root EQ '' THEN RETURN, ''
 
 ;-----------------------------------------------------
 ; Local Root \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
@@ -1485,62 +1542,20 @@ COUNT=count
 	
 	;Create a local URI object
 	;   - Not enough to simply use ::uri2dir because MrTokens may be present.
-	oFile = MrFileURI('file://' + self.local_root)
+	oFile = MrFileURI('file://' + root)
 	
 	;Convert the URI to a directory
 	file_uri = self -> uri2dir(uri)
 	
 	;Search for files
-	files = oFile -> Search(file_uri, COUNT=nLocal)
-	
-	;Destroy the file object
-	obj_destroy, oFile
+	files = oFile -> Search(file_uri, COUNT=count)
 
 ;-----------------------------------------------------
-; Return \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+; Finish \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 ;-----------------------------------------------------
-	if count eq 0 then files = ''
-	return, files
-end
-
-
-;+
-;   Search for files that match the URI.
-;
-; :Params:
-;       URI:            in, required, type=string
-;                       URI to match against files with the local or remote mirror repository.
-;
-; :Keywords:
-;       COUNT:          out, optional, type=integer
-;                       Number of files found.
-;
-; :Returns:
-;       FILES:          out, required, type=string/strarr
-;                       Names of the files that match the `URI`.
-;-
-FUNCTION MrWebURI::SearchMirror, uri, $
-COUNT=count
-	Compile_Opt idl2
-	On_Error, 2
 	
-	;Pre-emptive return
-	count     = 0
-	tf_remote = 0B
-	IF self.mirror_root EQ '' THEN RETURN, ''
-
-	;Create a local URI object
-	;   - Not enough to simply use ::uri2dir because MrTokens may be present.
-	oURI = MrFileURI('file://' + self.mirror_root)
-
-	;Convert the URI to a directory
-	file_uri = self -> uri2dir(uri)
-
-	;Search for files
-	files = oURI -> Search(file_uri, COUNT=count)
-
 	;Destroy the file object
-	Obj_Destroy, oURI
+	Obj_Destroy, oFile
 	
 	IF count EQ 0 THEN files = ''
 	RETURN, files
@@ -1895,10 +1910,11 @@ _REF_EXTRA=extra
 	if success eq 0 then return, 0
 	
 	;Search for environment variables
-	if n_elements(dropbox_root) eq 0 then dropbox_root = getenv('MRWEBDATA_DROPBOX_ROOT')
-	if n_elements(local_root)   eq 0 then local_root   = getenv('MRWEBDATA_LOCAL_ROOT')
-	if n_elements(mirror_root)  eq 0 then mirror_root  = getenv('MRWEBDATA_MIRROR_ROOT')
-	if n_elements(remote_root)  eq 0 then remote_root  = getenv('MRWEBDATA_REMOTE_ROOT')
+	if n_elements(dropbox_root) eq 0  then dropbox_root = getenv('MRWEBDATA_DROPBOX_ROOT')
+	if n_elements(local_root)   eq 0  then local_root   = getenv('MRWEBDATA_LOCAL_ROOT')
+	if n_elements(mirror_root)  eq 0  then mirror_root  = getenv('MRWEBDATA_MIRROR_ROOT')
+	if n_elements(remote_root)  eq 0  then remote_root  = getenv('MRWEBDATA_REMOTE_ROOT')
+	if remote_root              eq '' then void         = temporary(remote_root)
 	
 	;Default local root
 	if local_root eq '' then begin

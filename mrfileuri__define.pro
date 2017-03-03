@@ -48,51 +48,9 @@
 ; :History:
 ;   Modification History::
 ;       2016-06-24  -   Written by Matthew Argall.
+;       2017-01-23  -   Utilize superclass more effectively. - MRA
 ;-
 ;*****************************************************************************************
-;+
-;   Get the URL
-;
-; :Params:
-;       URI:            out, required, type=string
-;                       The URI to be made the current uri.
-;-
-function MrFileURI::Get, uri_pattern, tstart, tend, $
-COUNT=count, $
-CLOSEST=closest, $
-NEWEST=newest, $
-TIMEORDER=timeorder, $
-TPATTERN=tpattern, $
-VERSION=version, $
-VREGEX=vregex
-	compile_opt idl2
-	on_error, 2
-	
-	;Search for the files
-	files = self -> Search(uri_pattern, COUNT=count)
-	if count eq 0 then return, ''
-
-	;Filter by time
-	files = self -> FilterTime( uri_pattern, files, tstart, tend, $
-	                            COUNT     = count, $
-	                            CLOSEST   = closest, $
-	                            TIMEORDER = timeorder, $
-	                            TPATTERN  = tpattern )
-	if count eq 0 then message, 'No files in time interval.'
-	
-	;Filter by version
-	files = self -> FilterVersion( files, $
-	                               COUNT   = count, $
-	                               NEWEST  = newest, $
-	                               VERSION = version, $
-	                               VREGEX  = vregex )
-	if count eq 0 then message, 'No files pass version filter.'
-	
-	;Return
-	return, files
-end
-
-
 ;+
 ;   Get the directory listings.
 ;
@@ -113,57 +71,92 @@ end
 ;+
 ;   Set the URI.
 ;
+;   Calling Sequence:
+;       oURI -> SetURI, uri
+;       oURI -> SetURI, KEYWORD=value, ...
+;
 ; :Params:
 ;       URI:            in, required, type=string
-;                       The URL to be made the current uri.
+;                       The URL to be made the current uri. If present, all keywords
+;                           are ignored.
 ;       SUCCESS:        out, optional, type=boolean
-;                       Retuns true (1) if successful, false (0) otherwise.
+;                       Flag indicating that the URI was set successfully (true) or
+;                           unsuccessfully (false). Set to a named variable to suppress
+;                           error reporting.
+;
+; :Keywords:
+;       FRAGMENT:       in, optional, type=string
+;                       URL fragment; appears at end trailing a #.
+;       HOST:           in, optional, type=string
+;                       Host of the URL address.
+;       PATH:           in, optional, type=string
+;                       Path of the URL destination.
+;       PORT:           in, optional, type=string
+;                       Port to use for connection.
+;       QUERY:          in, optional, type=string
+;                       Query string, appearing after the ?.
+;       SCHEME:         in, optional, type=string
+;                       URL scheme.
 ;-
-pro MrFileURI::SetURI, uri, success
-	compile_opt idl2
-	on_error, 2
+PRO MrFileURI::SetURI, uri, success, $
+FRAGMENT=fragment, $
+HOST=host, $
+PATH=path, $
+PORT=port, $
+QUERY=query, $
+SCHEME=scheme
+	Compile_Opt idl2
 	
-	;Assume success
-	success = 1
-
-	;Parse the URL
-	;   - Take scheme from object property -- relative path could be given.
-	;   - Implies the scheme property must be correct upon entry
-	self -> ParseURI, uri, $
-	                  FRAGMENT  = fragment, $
-	                  HOST      = host, $
-	                  PASSWORD  = password, $
-	                  PATH      = path, $
-	                  PORT      = port, $
-	                  QUERY     = query, $
-	                  SCHEME    = scheme, $
-	                  USERNAME  = username
-
-	;Test if the path is a directory
-	if scheme eq '' then begin
-		success = 0
-		message, 'Invalid URI.'
-	endif
-	if ~file_test(path, /DIRECTORY) then begin
-		success = 0
-		if arg_present(success) $
-			then return $
-			else message, 'URI path is not a valid directory: "' + path + '".'
-	endif
+	Catch, the_error
+	IF the_error NE 0 THEN BEGIN
+		Catch, /CANCEL
+		On_Error, 2
+		success = 0B
+		IF ~Arg_Present(success) THEN Message, /REISSUE_LAST
+		RETURN
+	ENDIF
+	
+	;Assume failure
+	success = 0B
+	
+	;Parse the URI if it was given
+	IF N_Elements(uri) GT 0 THEN BEGIN
+		self -> ParseURI, uri, $
+		                  FRAGMENT     = fragment, $
+		                  HOST         = host, $
+		                  PASSWORD     = password, $
+		                  PATH         = path, $
+		                  PORT         = port, $
+		                  QUERY        = query, $
+		                  SCHEME       = scheme, $
+		                  USERNAME     = username
+		IF scheme EQ '' THEN Message, 'URI could not be parsed: "' + uri + '".'
+	ENDIF
+	
+	IF N_Elements(scheme) GT 0 THEN BEGIN
+		IF scheme NE 'file' $
+			THEN Message, 'SCHEME must be "file".' $
+			ELSE self.scheme = scheme
+	ENDIF
+	
+	IF N_Elements(path) GT 0 THEN BEGIN
+		IF ~file_test(path, /DIRECTORY) $
+			THEN Message, 'Invalid PATH: "' + path + '".' $
+			ELSE self.path = path
+	ENDIF
+	
+	;Set URL properties
+	IF N_Elements(fragment) GT 0 THEN self.fragment = fragment
+	IF N_Elements(host)     GT 0 THEN self.host     = host
+	IF N_Elements(password) GT 0 THEN self.password = password
+	IF N_Elements(port)     GT 0 THEN self.port     = port
+	IF N_Elements(query)    GT 0 THEN self.query    = query
+	IF N_Elements(username) GT 0 THEN self.username = username
 	
 	;Change directories
-	cd, path
-	
-	;Set properties
-	self.fragment  = fragment
-	self.host      = host
-	self.password  = password
-	self.path      = path
-	self.port      = port
-	self.query     = query
-	self.scheme    = scheme
-	self.username  = username
-end
+	CD, self.path
+	success = 1B
+END
 
 
 ;+
@@ -184,10 +177,15 @@ end
 ;       URI:            in, optional, type=string
 ;                       File identifier.
 ;
+; :Keywords:
+;       _REF_EXTRA:     in, optional, type=any
+;                       Any keyword accepted by MrURI::Init is also accepted here.
+;
 ; :Returns:
 ;       If successful, a valid MrFileURI object will be returned.
 ;-
-function MrFileURI::init, uri
+function MrFileURI::init, uri, $
+_REF_EXTRA=extra
 	compile_opt idl2
 
 	;Catch errors
@@ -199,7 +197,7 @@ function MrFileURI::init, uri
 	endif
 	
 	;Initialize superclasses
-	success = self -> MrURI::Init(uri)
+	success = self -> MrURI::Init(uri, _STRICT_EXTRA=extra)
 	if success eq 0 then return, 0
 
 	return, 1
@@ -214,14 +212,6 @@ end
 ;                           Class definition structure.
 ;
 ; :Fields:
-;       ALL:            Display all links?
-;       DELAY:          Max time to wait for a double click.
-;       LOCAL_LIST:     List of files in the local directory to which files are saved.
-;       LOCAL_PWD:      Present working directory upon initialization.
-;       NCLICKS:        Number of clicks: single or double.
-;       TLB:            Widget ID of the top-level base.
-;       WEB_LIST:       List of links at the current web path.
-;       WEBGET:         Object for navigating and downloading from the web.
 ;-
 pro MrFileURI__Define, class
 	compile_opt idl2
