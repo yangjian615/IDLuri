@@ -494,9 +494,9 @@ COUNT=count
 	
 	
 	;Time interval
-	temp_tstart = tstart
-	temp_tend   = tend
-	IF tpattern NE outpattern THEN BEGIN
+	temp_tstart = self.date_start
+	temp_tend   = self.date_end
+	IF self.tpattern NE outpattern THEN BEGIN
 		IF tf_tstart THEN MrTimeParser, self.date_start, self.tpattern, outPattern, temp_tstart
 		IF tf_tend   THEN MrTimeParser, self.date_end,   self.tpattern, outPattern, temp_tend
 	ENDIF
