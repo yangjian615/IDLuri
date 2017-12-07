@@ -48,6 +48,9 @@
 ; :History:
 ;   Modification History::
 ;       2016-06-24  -   Written by Matthew Argall
+;       2017-06-13  -   cgProgressBar takes an unbearable amount of time to redraw the
+;                           progress bar. Added MrWebURI_Callback_QuietDL callback
+;                           function as a text-based progress indicator. - MRA
 ;-
 ;*****************************************************************************************
 ;+
@@ -1617,9 +1620,9 @@ _REF_EXTRA=extra
 	
 	;Set properties
 	IF N_Elements(copy_to_local) GT 0 THEN self.copy_to_local = Keyword_Set(copy_to_local)
-	if n_elements(dropbox_root)  gt 0 then self.dropbox_root  = dropbox_root
-	if n_elements(local_root)    gt 0 then self.local_root    = local_root
-	if n_elements(mirror_root)   gt 0 then self.mirror_root   = mirror_root
+	IF N_Elements(dropbox_root)  GT 0 THEN self.dropbox_root  = dropbox_root
+	IF N_Elements(local_root)    GT 0 THEN self.local_root    = local_root
+	IF N_Elements(mirror_root)   GT 0 THEN self.mirror_root   = mirror_root
 	IF N_Elements(nSegment)      GT 0 THEN self.nSegment      = nSegment > 1
 	
 	;REMOTE_ROOT
@@ -1633,19 +1636,19 @@ _REF_EXTRA=extra
 	
 	;Offline options
 	;   - NO_DOWNLOAD depends on OFFLINE
-	if n_elements(offline) gt 0 then begin
-		self.offline = keyword_set(offline)
+	IF N_Elements(offline) GT 0 THEN begin
+		self.offline = Keyword_Set(offline)
 		no_download  = self.offline ? 1B : 0B
-	endif
-	if n_elements(no_download) gt 0 then self.no_download = keyword_set(no_download)
+	ENDIF
+	IF N_Elements(no_download) GT 0 THEN self.no_download = Keyword_Set(no_download)
 
 	;NetURL Properties
 	self -> IDLnetURL::SetProperty, CALLBACK_DATA     = callback_data, $
 	                                CALLBACK_FUNCTION = callback_function
 
 	;Superclass properties
-	if n_elements(extra) gt 0 then self -> MrURI::SetProperty, _STRICT_EXTRA=extra
-end
+	IF N_Elements(extra) GT 0 THEN self -> MrURI::SetProperty, _STRICT_EXTRA=extra
+END
 
 
 ;+
@@ -1763,6 +1766,79 @@ function MrWebURI_Callback_Download, statusInfo, progressInfo, callbackData
 
 			;Update progress
 			CallbackData.bar -> Update, pct
+			CallbackData.last_update = pct
+			CallbackData.oNet -> SetProperty, CALLBACK_DATA=CallbackData
+		endif
+	endif
+
+	; return 1 to continue, return 0 to cancel
+	if tf_cancel $
+		then return, 0 $
+		else return, 1
+end
+
+
+;+
+;   Callback function for the Download method.
+;
+; :Params:
+;       STATUSINFO:         in, required, type=strarr
+;                           Status information about the Get or Put methods.
+;       PROGRESSINFO:       in, required, type=lon64arr
+;                           Contains progress information. Elements::
+;                               0 - 1=valid data, 0=invalid data
+;                               1 - Download total for Get
+;                               2 - Number of bytes downloaded
+;                               3 - Upload total for Put
+;                               4 - Number of bytes uploaded
+;       CALLBACKDATA:       in, optional, type=structure
+;                           A structure with the following tags::
+;                               PROGRESSBAR - A cgProgressBar object
+;                               PERCENT     - The percent downloaded
+;
+; :Returns:
+;       CONTINUE:           1 if operation should continue, 0 if operation should
+;                               be halted.
+;-
+function MrWebURI_Callback_QuietDL, statusInfo, progressInfo, callbackData
+	compile_opt idl2
+	on_error, 2
+
+	;Assume no cancel
+	tf_cancel = 0
+
+	;The response header does not contribute to the total download
+	if progressInfo[2] gt 0 then begin
+		;Determine the total size
+		;   - ProgressInfo may or may not (for PHP) contain the total size
+		;   - If it doesn't, try to get it from the header information
+		if callbackData.total_size eq 0 then begin
+			;0% Complete notice
+			print, 'Downloading... Percent Complete: ', 0.0, '%', FORMAT='(a0, f5.1, a1, $)'
+			
+			;Check PROGRESSINFO
+			if progressInfo[1] gt 0 then begin
+				callbackData.total_size = progressInfo[1]
+				
+			;Parse from header
+			endif else begin
+				callbackData.oNet -> GetProperty, RESPONSE_HEADER=rh
+				header = callbackData.oWeb -> ParseResponseHeader(rh)
+				callbackData.total_size = fix(header.content_length, TYPE=14)
+			endelse
+			
+			;Update
+			CallbackData.oNet -> SetProperty, CALLBACK_DATA=CallbackData
+		endif
+
+		;Percent complete
+		pct      = double(progressInfo[2]) / double(CallbackData.total_size) * 100.0D
+		pct_diff = pct - CallbackData.last_update
+
+		;Did the percentage change by more than 0.5?
+		if pct_diff gt 1.0 then begin
+			;Update progress
+			print, String(Replicate(8B, 6)), pct, '%', FORMAT='(a6, f5.1, a1, $)'
 			CallbackData.last_update = pct
 			CallbackData.oNet -> SetProperty, CALLBACK_DATA=CallbackData
 		endif
